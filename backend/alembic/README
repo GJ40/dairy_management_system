@@ -1,0 +1,9 @@
+Alembic baseline for the existing MySQL schema.
+
+`0001_baseline` is an empty revision. It gives Alembic a starting point for a database whose tables
+were created by the Node/Sequelize backend. The live database has been stamped with this revision;
+`alembic_version` contains `0001_baseline`.
+
+Future schema changes must be new revisions. Never run `alembic revision --autogenerate` to create
+an initial "create all tables" migration, and never downgrade/reset production. See
+SCHEMA_MAPPING.md for the inspection and stamp record.
