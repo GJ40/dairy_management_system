@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
@@ -9,6 +10,7 @@ from fastapi import status
 from app.core.errors import api_error
 from app.models.customer import Customer
 from app.models.user import User
+from app.repositories.customer_order_repository import CustomerOrderRepository
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.sale_repository import SaleRepository
 from app.schemas.sale import (
@@ -19,6 +21,7 @@ from app.schemas.sale import (
     _date_string,
     serialize_sale_detail,
 )
+from app.services.stock_lock import StockLockService
 from app.services.stock_service import StockService
 from app.utils.time import is_future_date, is_today
 
@@ -47,10 +50,28 @@ class SaleService:
         repository: SaleRepository,
         customer_repository: CustomerRepository,
         stock_service: StockService,
+        *,
+        stock_lock: StockLockService | None = None,
+        order_repository: CustomerOrderRepository | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
         self.stock_service = stock_service
+        self.stock_lock = stock_lock
+        self.order_repository = order_repository
+
+    @asynccontextmanager
+    async def _lock(self):
+        if self.stock_lock is None:
+            yield
+        else:
+            async with self.stock_lock.lock():
+                yield
+
+    def _reserved_lookup(self):
+        if self.order_repository is None:
+            return None
+        return self.order_repository.total_approved_litres
 
     def _assert_date_permission(self, sale_date: str, user: User) -> None:
         if is_future_date(sale_date):
@@ -91,53 +112,55 @@ class SaleService:
     ) -> dict[str, Any]:
         self._assert_date_permission(payload.sale_date, user)
 
-        try:
-            customer = await self._assert_active_customer(payload.customer_id)
-            captured_rate = (
-                _decimal(payload.rate)
-                if payload.rate is not UNSET
-                else _decimal(customer.rate_per_litre)
-            )
-            if not captured_rate.is_finite() or captured_rate <= 0:
-                raise api_error(
-                    status.HTTP_400_BAD_REQUEST,
-                    "INVALID_RATE",
-                    "Captured sale rate must be greater than zero",
+        async with self._lock():
+            try:
+                customer = await self._assert_active_customer(payload.customer_id)
+                captured_rate = (
+                    _decimal(payload.rate)
+                    if payload.rate is not UNSET
+                    else _decimal(customer.rate_per_litre)
+                )
+                if not captured_rate.is_finite() or captured_rate <= 0:
+                    raise api_error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "INVALID_RATE",
+                        "Captured sale rate must be greater than zero",
+                    )
+
+                litres = _decimal(payload.litres)
+                if not litres.is_finite() or litres <= 0:
+                    raise api_error(
+                        status.HTTP_400_BAD_REQUEST,
+                        "INVALID_QUANTITY",
+                        "Litres sold must be greater than zero",
+                    )
+
+                amount = (litres * captured_rate).quantize(
+                    CENT,
+                    rounding=ROUND_HALF_UP,
+                )
+                await self.stock_service.assert_available_stock(
+                    payload.sale_date,
+                    litres,
+                    reserved_lookup=self._reserved_lookup(),
                 )
 
-            litres = _decimal(payload.litres)
-            if not litres.is_finite() or litres <= 0:
-                raise api_error(
-                    status.HTTP_400_BAD_REQUEST,
-                    "INVALID_QUANTITY",
-                    "Litres sold must be greater than zero",
+                sale = await self.repository.create(
+                    customer_id=customer.id,
+                    sale_date=date.fromisoformat(payload.sale_date),
+                    litres=litres.quantize(CENT, rounding=ROUND_HALF_UP),
+                    rate=captured_rate.quantize(CENT, rounding=ROUND_HALF_UP),
+                    amount=amount,
+                    recorded_by=user.id,
                 )
-
-            amount = (litres * captured_rate).quantize(
-                CENT,
-                rounding=ROUND_HALF_UP,
-            )
-            await self.stock_service.assert_available_stock(
-                payload.sale_date,
-                litres,
-            )
-
-            sale = await self.repository.create(
-                customer_id=customer.id,
-                sale_date=date.fromisoformat(payload.sale_date),
-                litres=litres.quantize(CENT, rounding=ROUND_HALF_UP),
-                rate=captured_rate.quantize(CENT, rounding=ROUND_HALF_UP),
-                amount=amount,
-                recorded_by=user.id,
-            )
-            await self.repository.flush()
-            updated_stock = await self.stock_service.get_stock_for_date(
-                payload.sale_date
-            )
-            await self.repository.commit()
-        except Exception:
-            await self.repository.rollback()
-            raise
+                await self.repository.flush()
+                updated_stock = await self.stock_service.get_stock_for_date(
+                    payload.sale_date
+                )
+                await self.repository.commit()
+            except Exception:
+                await self.repository.rollback()
+                raise
 
         return {
             "id": sale.id,
@@ -217,52 +240,54 @@ class SaleService:
                 f"Sale with id {raw_id} not found",
             )
 
-        try:
-            current_date = _date_string(sale.sale_date) or ""
-            new_date = (
-                payload.sale_date
-                if payload.sale_date is not UNSET
-                else current_date
-            )
-            self._assert_date_permission(new_date, user)
-
-            current_litres = _decimal(sale.litres)
-            current_rate = _decimal(sale.rate)
-            new_litres = (
-                _decimal(payload.litres)
-                if payload.litres is not UNSET
-                else current_litres
-            )
-            new_rate = (
-                _decimal(payload.rate)
-                if payload.rate is not UNSET
-                else current_rate
-            )
-
-            if new_litres > current_litres or new_date != current_date:
-                additional_litres = (
-                    new_litres - current_litres
-                    if new_date == current_date
-                    else new_litres
+        async with self._lock():
+            try:
+                current_date = _date_string(sale.sale_date) or ""
+                new_date = (
+                    payload.sale_date
+                    if payload.sale_date is not UNSET
+                    else current_date
                 )
-                await self.stock_service.assert_available_stock(
-                    new_date,
-                    additional_litres,
+                self._assert_date_permission(new_date, user)
+
+                current_litres = _decimal(sale.litres)
+                current_rate = _decimal(sale.rate)
+                new_litres = (
+                    _decimal(payload.litres)
+                    if payload.litres is not UNSET
+                    else current_litres
+                )
+                new_rate = (
+                    _decimal(payload.rate)
+                    if payload.rate is not UNSET
+                    else current_rate
                 )
 
-            new_amount = (new_litres * new_rate).quantize(
-                CENT,
-                rounding=ROUND_HALF_UP,
-            )
-            sale.sale_date = date.fromisoformat(new_date)
-            sale.litres = new_litres.quantize(CENT, rounding=ROUND_HALF_UP)
-            sale.rate = new_rate.quantize(CENT, rounding=ROUND_HALF_UP)
-            sale.amount = new_amount
-            sale.recorded_by = user.id
+                if new_litres > current_litres or new_date != current_date:
+                    additional_litres = (
+                        new_litres - current_litres
+                        if new_date == current_date
+                        else new_litres
+                    )
+                    await self.stock_service.assert_available_stock(
+                        new_date,
+                        additional_litres,
+                        reserved_lookup=self._reserved_lookup(),
+                    )
 
-            await self.repository.commit()
-        except Exception:
-            await self.repository.rollback()
-            raise
+                new_amount = (new_litres * new_rate).quantize(
+                    CENT,
+                    rounding=ROUND_HALF_UP,
+                )
+                sale.sale_date = date.fromisoformat(new_date)
+                sale.litres = new_litres.quantize(CENT, rounding=ROUND_HALF_UP)
+                sale.rate = new_rate.quantize(CENT, rounding=ROUND_HALF_UP)
+                sale.amount = new_amount
+                sale.recorded_by = user.id
+
+                await self.repository.commit()
+            except Exception:
+                await self.repository.rollback()
+                raise
 
         return serialize_sale_detail(sale, include_address=True)

@@ -58,6 +58,12 @@ The fake seeder commits once at the end and rolls back on error. Re-running dupl
 expenses only (their natural keys contain random amounts — same as Node). It works with both modern
 and legacy Faker APIs.
 
+It also seeds customer portal demo data: two pre-activated accounts (`portal1@dairydemo.in`,
+`portal2@dairydemo.in`, password `Customer@123`), three orders (submitted / approved / fulfilled)
+and two support queries (one open, one answered). One invoice is seeded for the first active
+customer in `partial` status — generate more from the Invoices page, which groups all un-invoiced
+sales per customer.
+
 ## 4. What is implemented
 
 | Area | Endpoints | Roles |

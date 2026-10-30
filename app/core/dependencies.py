@@ -7,10 +7,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import api_error
-from app.core.security import decode_access_token
-from app.db.session import get_db
+from app.core.security import decode_access_token, decode_customer_access_token
+from app.db.session import engine, get_db
+from app.models.customer import Customer
+from app.models.customer_portal_account import CustomerPortalAccount
 from app.models.user import User
 from app.repositories.buffalo_repository import BuffaloRepository
+from app.repositories.customer_order_repository import CustomerOrderRepository
+from app.repositories.customer_portal_account_repository import (
+    CustomerPortalAccountRepository,
+)
+from app.repositories.customer_query_repository import CustomerQueryRepository
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.delete_repository import DeleteRepository
 from app.repositories.expense_category_repository import ExpenseCategoryRepository
@@ -24,6 +31,14 @@ from app.repositories.user_repository import UserRepository
 from app.repositories.wastage_repository import WastageRepository
 from app.services.auth_service import AuthService
 from app.services.buffalo_service import BuffaloService
+from app.services.customer_dashboard_service import CustomerDashboardService
+from app.services.customer_invoice_service import CustomerInvoiceService
+from app.services.customer_order_service import CustomerOrderService
+from app.services.customer_portal_auth_service import (
+    CustomerPortalAccountService,
+    CustomerPortalAuthService,
+)
+from app.services.customer_query_service import CustomerQueryService
 from app.services.customer_service import CustomerService
 from app.services.delete_service import DeleteService
 from app.services.expense_category_service import ExpenseCategoryService
@@ -32,6 +47,7 @@ from app.services.invoice_service import InvoiceService
 from app.services.production_service import ProductionService
 from app.services.report_service import ReportService
 from app.services.sale_service import SaleService
+from app.services.stock_lock import StockLockService
 from app.services.stock_service import StockService
 from app.services.user_service import UserService
 from app.services.wastage_service import WastageService
@@ -140,6 +156,109 @@ def require_roles(*roles: str):
 require_admin = require_roles("admin")
 
 
+customer_bearer_scheme = HTTPBearer(
+    scheme_name="CustomerBearerAuth",
+    description=(
+        "Short-lived customer access token from POST /api/v1/customer-auth/login "
+        "(or /customer-auth/refresh). Every customer guard also requires the "
+        "httpOnly dairy_customer_refresh_token cookie, which is separate from "
+        "the staff session cookie."
+    ),
+    auto_error=False,
+)
+
+
+async def get_current_customer_account(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    _credentials: HTTPAuthorizationCredentials | None = Security(
+        customer_bearer_scheme
+    ),
+) -> CustomerPortalAccount:
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Missing or malformed Authorization header",
+        )
+
+    token = auth_header[7:].strip()
+    if not token:
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Authentication token not provided",
+        )
+
+    try:
+        payload = decode_customer_access_token(token)
+    except jwt.ExpiredSignatureError as exc:
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Authentication token has expired",
+        ) from exc
+    except jwt.InvalidTokenError as exc:
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Invalid authentication token",
+        ) from exc
+
+    if not request.cookies.get(settings.customer_refresh_cookie_name):
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Customer session cookie is missing; sign in again",
+        )
+
+    try:
+        account_id = int(payload.get("account_id"))
+    except (TypeError, ValueError) as exc:
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Account not found",
+        ) from exc
+
+    account = await db.get(CustomerPortalAccount, account_id)
+    if (
+        account is None
+        or account.is_deleted
+        or account.activated_at is None
+        or not account.password_hash
+    ):
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Account not found",
+        )
+    if not account.is_active:
+        raise api_error(
+            status.HTTP_403_FORBIDDEN,
+            "ACCOUNT_INACTIVE",
+            "This portal account is deactivated",
+        )
+
+    customer = await db.get(Customer, account.customer_id)
+    if customer is None or customer.is_deleted:
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Account not found",
+        )
+    if not customer.is_active:
+        raise api_error(
+            status.HTTP_403_FORBIDDEN,
+            "ACCOUNT_INACTIVE",
+            "The linked customer account is inactive",
+        )
+
+    request.state.customer_account = account
+    return account
+
+
 def get_user_repository(db: AsyncSession = Depends(get_db)) -> UserRepository:
     return UserRepository(db)
 
@@ -216,14 +335,34 @@ def get_sale_repository(db: AsyncSession = Depends(get_db)) -> SaleRepository:
     return SaleRepository(db)
 
 
+def get_customer_order_repository(
+    db: AsyncSession = Depends(get_db),
+) -> CustomerOrderRepository:
+    return CustomerOrderRepository(db)
+
+
+def get_stock_lock_service() -> StockLockService:
+    return StockLockService(engine)
+
+
 def get_sale_service(
     repository: SaleRepository = Depends(get_sale_repository),
     customer_repository: CustomerRepository = Depends(
         get_customer_repository
     ),
     stock_service: StockService = Depends(get_stock_service),
+    stock_lock: StockLockService = Depends(get_stock_lock_service),
+    order_repository: CustomerOrderRepository = Depends(
+        get_customer_order_repository
+    ),
 ) -> SaleService:
-    return SaleService(repository, customer_repository, stock_service)
+    return SaleService(
+        repository,
+        customer_repository,
+        stock_service,
+        stock_lock=stock_lock,
+        order_repository=order_repository,
+    )
 
 
 def get_invoice_repository(
@@ -244,6 +383,15 @@ def get_invoice_service(
         customer_repository,
         sale_repository,
     )
+
+
+def get_customer_invoice_service(
+    repository: InvoiceRepository = Depends(get_invoice_repository),
+    customer_repository: CustomerRepository = Depends(
+        get_customer_repository
+    ),
+) -> CustomerInvoiceService:
+    return CustomerInvoiceService(repository, customer_repository)
 
 
 def get_delete_repository(db: AsyncSession = Depends(get_db)) -> DeleteRepository:
@@ -300,4 +448,88 @@ def get_report_service(
         buffalo_service,
         production_service,
         stock_service,
+    )
+
+
+def get_customer_portal_account_repository(
+    db: AsyncSession = Depends(get_db),
+) -> CustomerPortalAccountRepository:
+    return CustomerPortalAccountRepository(db)
+
+
+def get_customer_portal_auth_service(
+    repository: CustomerPortalAccountRepository = Depends(
+        get_customer_portal_account_repository
+    ),
+    customer_repository: CustomerRepository = Depends(get_customer_repository),
+) -> CustomerPortalAuthService:
+    return CustomerPortalAuthService(repository, customer_repository)
+
+
+def get_customer_portal_account_service(
+    repository: CustomerPortalAccountRepository = Depends(
+        get_customer_portal_account_repository
+    ),
+    customer_repository: CustomerRepository = Depends(get_customer_repository),
+) -> CustomerPortalAccountService:
+    return CustomerPortalAccountService(repository, customer_repository)
+
+
+def get_customer_order_service(
+    repository: CustomerOrderRepository = Depends(get_customer_order_repository),
+    customer_repository: CustomerRepository = Depends(get_customer_repository),
+    stock_service: StockService = Depends(get_stock_service),
+    stock_lock: StockLockService = Depends(get_stock_lock_service),
+    sale_repository: SaleRepository = Depends(get_sale_repository),
+    invoice_service: InvoiceService = Depends(get_invoice_service),
+) -> CustomerOrderService:
+    return CustomerOrderService(
+        repository,
+        customer_repository,
+        stock_service=stock_service,
+        sale_repository=sale_repository,
+        invoice_service=invoice_service,
+        stock_lock=stock_lock,
+    )
+
+
+def get_customer_query_repository(
+    db: AsyncSession = Depends(get_db),
+) -> CustomerQueryRepository:
+    return CustomerQueryRepository(db)
+
+
+def get_customer_dashboard_service(
+    customer_repository: CustomerRepository = Depends(get_customer_repository),
+    order_repository: CustomerOrderRepository = Depends(
+        get_customer_order_repository
+    ),
+    invoice_repository: InvoiceRepository = Depends(get_invoice_repository),
+    query_repository: CustomerQueryRepository = Depends(
+        get_customer_query_repository
+    ),
+) -> CustomerDashboardService:
+    return CustomerDashboardService(
+        customer_repository,
+        order_repository,
+        invoice_repository,
+        query_repository,
+    )
+
+
+def get_customer_query_service(
+    repository: CustomerQueryRepository = Depends(
+        get_customer_query_repository
+    ),
+    customer_repository: CustomerRepository = Depends(get_customer_repository),
+    account_repository: CustomerPortalAccountRepository = Depends(
+        get_customer_portal_account_repository
+    ),
+    user_repository: UserRepository = Depends(get_user_repository),
+) -> CustomerQueryService:
+    return CustomerQueryService(
+        repository,
+        customer_repository,
+        account_repository,
+        user_repository,
     )

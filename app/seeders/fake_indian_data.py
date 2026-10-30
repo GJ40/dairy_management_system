@@ -12,6 +12,12 @@ from app.core.config import settings
 from app.core.security import hash_password
 from app.models.buffalo import Buffalo
 from app.models.customer import Customer
+from app.models.customer_order import CustomerOrder
+from app.models.customer_order_event import CustomerOrderEvent
+from app.models.customer_portal_account import CustomerPortalAccount
+from app.models.customer_portal_account_event import CustomerPortalAccountEvent
+from app.models.customer_query import CustomerQuery
+from app.models.customer_query_message import CustomerQueryMessage
 from app.models.expense import Expense
 from app.models.expense_category import ExpenseCategory
 from app.models.invoice import Invoice
@@ -22,7 +28,7 @@ from app.models.sale import Sale
 from app.models.user import User
 from app.seeders.base_seed import seed_database
 from app.seeders.store import SeedStore
-from app.utils.time import get_business_date
+from app.utils.time import business_now_naive, get_business_date
 
 CENT = Decimal("0.01")
 
@@ -103,6 +109,44 @@ EXPENSE_NOTES: dict[str, tuple[str, ...]] = {
 
 DEFAULT_EXPENSE_NOTE = "General dairy farm expense"
 
+# Customer portal demo data. Accounts are created pre-activated with a known
+# password so the portal can be exercised without the activation email flow.
+DEMO_PORTAL_PASSWORD = "Customer@123"
+DEMO_PORTAL_ACCOUNT_COUNT = 2
+
+ORDER_EVENT_CHAIN: dict[str, tuple[str, ...]] = {
+    "submitted": ("submitted",),
+    "approved": ("submitted", "approved"),
+    "fulfilled": ("submitted", "approved", "fulfilled"),
+}
+
+# (portal account index, status, requested-date offset in days, litres)
+DEMO_ORDERS: tuple[tuple[int, str, int, str], ...] = (
+    (0, "submitted", 1, "8.00"),
+    (0, "approved", 1, "6.00"),
+    (1, "fulfilled", 0, "5.00"),
+)
+
+# (portal account index, status, category, subject, customer message)
+DEMO_QUERIES: tuple[tuple[int, str, str, str, str], ...] = (
+    (
+        0,
+        "open",
+        "billing",
+        "Question about this month's invoice",
+        "Could you share the breakdown for this month's invoice?",
+    ),
+    (
+        1,
+        "answered",
+        "delivery",
+        "Evening delivery timing",
+        "Can the evening delivery arrive before 7 PM?",
+    ),
+)
+
+QUERY_STAFF_REPLY = "Yes - the evening round now reaches your area by 6:45 PM."
+
 BUFFALO_STATUSES = ("active",) * 9 + ("dry", "sold", "dead")
 
 
@@ -177,6 +221,9 @@ async def seed_fake_indian_data(
         "sales": 0,
         "invoices": 0,
         "invoice_links": 0,
+        "portal_accounts": 0,
+        "orders": 0,
+        "queries": 0,
         "expenses": 0,
     }
 
@@ -198,6 +245,7 @@ async def seed_fake_indian_data(
                 )
                 created["operators"] += 1
             operators.append(existing)
+        await store.flush()
         recorders = [admin, *operators]
 
         buffaloes: list[Any] = []
@@ -217,6 +265,7 @@ async def seed_fake_indian_data(
                 )
                 created["buffaloes"] += 1
             buffaloes.append(existing)
+        await store.flush()
 
         customers: list[Any] = []
         for index in range(8):
@@ -236,6 +285,8 @@ async def seed_fake_indian_data(
                 )
                 created["customers"] += 1
             customers.append(existing)
+        # Parents must have their primary keys before children reference them.
+        await store.flush()
 
         today = date.fromisoformat(get_business_date())
         active_buffaloes = [
@@ -318,6 +369,7 @@ async def seed_fake_indian_data(
                     )
                     created["sales"] += 1
                 created_sales.append(existing)
+        await store.flush()
 
         if active_customers and created_sales:
             target_customer = active_customers[0]
@@ -364,6 +416,129 @@ async def seed_fake_indian_data(
                             )
                             created["invoice_links"] += 1
 
+        # Customer portal demo data: activated accounts, a few orders and two
+        # support queries so the staff portal pages are not empty on a fresh DB.
+        portal_demo: list[tuple[Any, Any]] = []
+        for index, customer in enumerate(
+            active_customers[:DEMO_PORTAL_ACCOUNT_COUNT], start=1
+        ):
+            account = await store.find(
+                CustomerPortalAccount,
+                customer_id=customer.id,
+            )
+            if account is None:
+                email = f"portal{index}@dairydemo.in"
+                if await store.find(CustomerPortalAccount, email=email) is None:
+                    account = await store.create(
+                        CustomerPortalAccount,
+                        customer_id=customer.id,
+                        email=email,
+                        password_hash=hash_password(DEMO_PORTAL_PASSWORD),
+                        is_active=True,
+                        activated_at=business_now_naive(),
+                        is_deleted=False,
+                    )
+                    created["portal_accounts"] += 1
+                    await store.flush()
+                    await store.create(
+                        CustomerPortalAccountEvent,
+                        account_id=account.id,
+                        action="activated",
+                        actor_user_id=admin.id,
+                        note="Demo account created by the fake data seeder",
+                    )
+            if account is not None:
+                portal_demo.append((customer, account))
+
+        for order_index, (account_index, status, day_offset, litres) in enumerate(
+            DEMO_ORDERS, start=1
+        ):
+            if account_index >= len(portal_demo):
+                continue
+            customer, account = portal_demo[account_index]
+            order_no = f"ORD-{today:%Y%m%d}-{order_index:04X}"
+            if await store.find(CustomerOrder, order_no=order_no) is not None:
+                continue
+
+            quantity = Decimal(litres)
+            rate = Decimal(str(customer.rate_per_litre)).quantize(CENT)
+            reviewed = status != "submitted"
+            order = await store.create(
+                CustomerOrder,
+                order_no=order_no,
+                customer_id=customer.id,
+                account_id=account.id,
+                requested_date=today + timedelta(days=day_offset),
+                quantity_litres=quantity,
+                rate_snapshot=rate,
+                estimated_total=_money(quantity * rate),
+                note="Demo order created by the fake data seeder",
+                status=status,
+                reviewed_by=admin.id if reviewed else None,
+                reviewed_at=business_now_naive() if reviewed else None,
+            )
+            created["orders"] += 1
+            await store.flush()
+
+            previous: str | None = None
+            for event_status in ORDER_EVENT_CHAIN[status]:
+                await store.create(
+                    CustomerOrderEvent,
+                    order_id=order.id,
+                    from_status=previous,
+                    to_status=event_status,
+                    actor_type="customer" if previous is None else "staff",
+                    actor_account_id=account.id if previous is None else None,
+                    actor_user_id=None if previous is None else admin.id,
+                )
+                previous = event_status
+
+        for query_index, (
+            account_index,
+            status,
+            category,
+            subject,
+            message_body,
+        ) in enumerate(DEMO_QUERIES, start=1):
+            if account_index >= len(portal_demo):
+                continue
+            customer, account = portal_demo[account_index]
+            query_no = f"QRY-{today:%Y%m%d}-{query_index:04X}"
+            if await store.find(CustomerQuery, query_no=query_no) is not None:
+                continue
+
+            now = business_now_naive()
+            query = await store.create(
+                CustomerQuery,
+                query_no=query_no,
+                customer_id=customer.id,
+                account_id=account.id,
+                category=category,
+                subject=subject,
+                status=status,
+                assigned_to=admin.id,
+                last_message_at=now,
+            )
+            created["queries"] += 1
+            await store.flush()
+            await store.create(
+                CustomerQueryMessage,
+                query_id=query.id,
+                body=message_body,
+                sender_type="customer",
+                sender_account_id=account.id,
+                is_internal=False,
+            )
+            if status == "answered":
+                await store.create(
+                    CustomerQueryMessage,
+                    query_id=query.id,
+                    body=QUERY_STAFF_REPLY,
+                    sender_type="staff",
+                    sender_user_id=admin.id,
+                    is_internal=False,
+                )
+
         categories = await store.find_all(ExpenseCategory)
         for category in categories:
             notes = EXPENSE_NOTES.get(category.name, (DEFAULT_EXPENSE_NOTE,))
@@ -402,6 +577,12 @@ async def _run() -> None:
     async with SessionLocal() as session:
         summary = await seed_fake_indian_data(SeedStore(session))
     print(f"[FAKER-SEED] created: {summary['created']}")
+    accounts = summary["created"]["portal_accounts"]
+    if accounts:
+        print(
+            f"[FAKER-SEED] portal accounts: {accounts} activated "
+            f"(portalN@dairydemo.in / {DEMO_PORTAL_PASSWORD})"
+        )
 
 
 def run() -> None:

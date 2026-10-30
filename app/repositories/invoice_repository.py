@@ -35,6 +35,26 @@ class InvoiceRepository:
         statement = select(Invoice).where(Invoice.invoice_no == invoice_no)
         return await self.session.scalar(statement)
 
+    async def get_owned(
+        self,
+        invoice_id: int,
+        customer_id: int,
+    ) -> Invoice | None:
+        statement = (
+            select(Invoice)
+            .options(
+                joinedload(Invoice.customer),
+                selectinload(Invoice.sale_links).joinedload(InvoiceSale.sale),
+            )
+            .where(
+                Invoice.id == invoice_id,
+                Invoice.customer_id == customer_id,
+                Invoice.is_deleted.is_(False),
+            )
+        )
+        result = await self.session.scalars(statement)
+        return result.unique().one_or_none()
+
     async def list_and_count(
         self,
         *,

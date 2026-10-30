@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -62,6 +63,47 @@ class Settings(BaseSettings):
         default=480,
         ge=1,
         validation_alias="REFRESH_TOKEN_EXPIRE_MINUTES",
+    )
+
+    # --- Customer portal auth -------------------------------------------
+    customer_jwt_secret: SecretStr | None = Field(
+        default=None,
+        validation_alias="CUSTOMER_JWT_SECRET",
+    )
+    customer_activation_ttl_hours: int = Field(
+        default=72,
+        ge=1,
+        validation_alias="CUSTOMER_ACTIVATION_TTL_HOURS",
+    )
+    customer_refresh_cookie_name: str = Field(
+        default="dairy_customer_refresh_token",
+        validation_alias="CUSTOMER_REFRESH_COOKIE_NAME",
+    )
+    customer_session_hint_cookie_name: str = Field(
+        default="dairy_customer_session",
+        validation_alias="CUSTOMER_SESSION_HINT_COOKIE_NAME",
+    )
+
+    # --- Customer orders ------------------------------------------------
+    customer_order_min_litres: Decimal = Field(
+        default=Decimal("1.00"),
+        gt=0,
+        validation_alias="CUSTOMER_ORDER_MIN_LITRES",
+    )
+    customer_order_max_litres: Decimal = Field(
+        default=Decimal("500.00"),
+        gt=0,
+        validation_alias="CUSTOMER_ORDER_MAX_LITRES",
+    )
+    customer_order_daily_cap_litres: Decimal = Field(
+        default=Decimal("500.00"),
+        gt=0,
+        validation_alias="CUSTOMER_ORDER_DAILY_CAP_LITRES",
+    )
+    customer_order_window_days: int = Field(
+        default=14,
+        ge=0,
+        validation_alias="CUSTOMER_ORDER_WINDOW_DAYS",
     )
 
     # --- Refresh cookie -------------------------------------------------
@@ -147,6 +189,13 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator("customer_jwt_secret", mode="before")
+    @classmethod
+    def _empty_customer_jwt_secret(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("refresh_cookie_domain", mode="before")
     @classmethod
     def _empty_cookie_domain(cls, value: object) -> object:
@@ -221,6 +270,43 @@ class Settings(BaseSettings):
         """
         return {
             "key": self.session_hint_cookie_name,
+            "path": "/",
+            "domain": self.refresh_cookie_domain,
+            "httponly": False,
+            "secure": self.cookie_secure,
+            "samesite": self.refresh_cookie_samesite,
+        }
+
+    @property
+    def customer_jwt_secret_value(self) -> str:
+        if self.customer_jwt_secret is not None:
+            return self.customer_jwt_secret.get_secret_value()
+        return self.jwt_secret.get_secret_value()
+
+    @property
+    def customer_cookie_path(self) -> str:
+        path = (self.api_v1_prefix or "").strip().rstrip("/")
+        return path if path.startswith("/") else f"/{path}" if path else "/"
+
+    @property
+    def customer_refresh_cookie_max_age(self) -> int:
+        return self.refresh_token_expire_minutes * 60
+
+    @property
+    def customer_refresh_cookie_flags(self) -> dict[str, object]:
+        return {
+            "key": self.customer_refresh_cookie_name,
+            "path": self.customer_cookie_path,
+            "domain": self.refresh_cookie_domain,
+            "httponly": True,
+            "secure": self.cookie_secure,
+            "samesite": self.refresh_cookie_samesite,
+        }
+
+    @property
+    def customer_session_hint_cookie_flags(self) -> dict[str, object]:
+        return {
+            "key": self.customer_session_hint_cookie_name,
             "path": "/",
             "domain": self.refresh_cookie_domain,
             "httponly": False,

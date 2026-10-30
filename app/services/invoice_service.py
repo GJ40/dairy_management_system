@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import status
 
 from app.core.errors import api_error
+from app.models.invoice import Invoice
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.invoice_repository import InvoiceRepository
 from app.repositories.sale_repository import SaleRepository
@@ -54,6 +55,34 @@ class InvoiceService:
             if await self.repository.find_by_invoice_no(candidate) is None:
                 return candidate
         return f"INV-{clean_date}-{str(int(time.time() * 1000))[-4:]}"
+
+    async def create_invoice_for_sale(
+        self,
+        *,
+        customer_id: int,
+        sale_id: int,
+        period_start: date,
+        period_end: date,
+        total_amount: Decimal,
+    ) -> Invoice:
+        """Create one invoice linked to one sale without committing.
+
+        Used by order fulfilment so the sale, invoice, link, order state and
+        event commit or roll back together (D-012).
+        """
+        invoice_no = await self._generate_unique_invoice_number(
+            period_start.isoformat()
+        )
+        invoice = await self.repository.create(
+            invoice_no=invoice_no,
+            customer_id=customer_id,
+            period_start=period_start,
+            period_end=period_end,
+            total_amount=total_amount,
+        )
+        await self.repository.flush()
+        await self.repository.create_invoice_sales(invoice.id, [sale_id])
+        return invoice
 
     async def create_invoice(
         self,

@@ -18,6 +18,11 @@ from app.db.session import dispose_engine
 from app.routers import (
     auth,
     buffaloes,
+    customer_auth,
+    customer_orders,
+    customer_portal,
+    customer_portal_accounts,
+    customer_queries,
     customers,
     delete,
     docs,
@@ -82,6 +87,14 @@ def create_app() -> FastAPI:
     app.include_router(expenses.router, prefix=settings.api_v1_prefix)
     app.include_router(expenses.alias_router, prefix=settings.api_v1_prefix)
     app.include_router(reports.router, prefix=settings.api_v1_prefix)
+    app.include_router(customer_auth.router, prefix=settings.api_v1_prefix)
+    app.include_router(customer_orders.router, prefix=settings.api_v1_prefix)
+    app.include_router(customer_portal.router, prefix=settings.api_v1_prefix)
+    app.include_router(customer_queries.router, prefix=settings.api_v1_prefix)
+    app.include_router(
+        customer_portal_accounts.router,
+        prefix=settings.api_v1_prefix,
+    )
 
     return app
 
