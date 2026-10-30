@@ -419,6 +419,57 @@ class UserServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             UpdateUserRequest(full_name=None)
 
+    async def test_delete_operator_soft_deletes(self) -> None:
+        result = await self.service.delete_user(str(self.operator.id), self.admin.id)
+        self.assertEqual(result["resource"], "users")
+        self.assertEqual(result["id"], self.operator.id)
+        self.assertIn("deleted_at", result)
+        self.assertTrue(self.operator.is_deleted)
+        self.assertFalse(self.operator.is_active)
+        self.assertGreater(self.repository.commits, 0)
+        self.assertEqual(self.repository.rollbacks, 0)
+
+        listing = await self.service.list_users(UserQuery())
+        self.assertNotIn(
+            "operator",
+            [item["username"] for item in listing["items"]],
+        )
+
+    async def test_delete_inactive_operator_allowed(self) -> None:
+        self.operator.is_active = False
+        result = await self.service.delete_user(str(self.operator.id), self.admin.id)
+        self.assertEqual(result["id"], self.operator.id)
+        self.assertTrue(self.operator.is_deleted)
+
+    async def test_delete_missing_or_invalid_id(self) -> None:
+        with self.assertRaisesRegex(HTTPException, "User with id 999 not found"):
+            await self.service.delete_user("999", self.admin.id)
+        with self.assertRaisesRegex(HTTPException, "User with id abc not found"):
+            await self.service.delete_user("abc", self.admin.id)
+
+    async def test_delete_admin_account_blocked(self) -> None:
+        other_admin = make_user(
+            user_id=4,
+            email="admin2@example.com",
+            username="admin2",
+            full_name="Second Admin",
+        )
+        self.repository.users.append(other_admin)
+        with self.assertRaisesRegex(
+            HTTPException,
+            "Only operator accounts can be deleted",
+        ):
+            await self.service.delete_user(str(other_admin.id), self.admin.id)
+        self.assertFalse(other_admin.is_deleted)
+
+    async def test_cannot_delete_self(self) -> None:
+        with self.assertRaisesRegex(
+            HTTPException,
+            "Administrators cannot delete their own account",
+        ):
+            await self.service.delete_user(str(self.admin.id), self.admin.id)
+        self.assertFalse(self.admin.is_deleted)
+
 
 class FakeSession:
     def __init__(self, user: User | None) -> None:
@@ -762,6 +813,89 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             response.json()["error"]["message"],
             "Administrators cannot deactivate their own account",
         )
+
+    async def test_admin_deletes_operator(self) -> None:
+        response = await self.client.delete(
+            f"/api/v1/users/{self.operator.id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["resource"], "users")
+        self.assertEqual(body["id"], self.operator.id)
+        self.assertEqual(body["message"], f"User #{self.operator.id} deleted successfully")
+        self.assertTrue(self.operator.is_deleted)
+        self.assertFalse(self.operator.is_active)
+
+        listing = await self.client.get("/api/v1/users", headers=self._auth())
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(
+            [item["id"] for item in listing.json()["items"]],
+            [self.admin.id, self.inactive.id],
+        )
+
+        # A soft-deleted user is hidden and can no longer be fetched or deleted.
+        missing = await self.client.delete(
+            f"/api/v1/users/{self.operator.id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(missing.status_code, 404)
+        self.assertEqual(
+            missing.json()["error"]["message"],
+            f"User with id {self.operator.id} not found",
+        )
+
+    async def test_delete_operator_requires_admin(self) -> None:
+        self.current_user = self.operator
+        forbidden = await self.client.delete(
+            f"/api/v1/users/{self.inactive.id}",
+            headers=self._auth(self.operator),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(
+            forbidden.json()["error"]["message"],
+            "Access denied: Requires one of [admin] role",
+        )
+        self.assertFalse(self.inactive.is_deleted)
+
+        unauthenticated = await self.client.delete(
+            f"/api/v1/users/{self.inactive.id}"
+        )
+        self.assertEqual(unauthenticated.status_code, 401)
+        self.assertFalse(self.inactive.is_deleted)
+
+    async def test_delete_admin_account_blocked_endpoint(self) -> None:
+        other_admin = make_user(
+            user_id=4,
+            email="admin2@example.com",
+            username="admin2",
+            full_name="Second Admin",
+        )
+        self.repository.users.append(other_admin)
+
+        response = await self.client.delete(
+            f"/api/v1/users/{other_admin.id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "BAD_REQUEST")
+        self.assertIn(
+            "Only operator accounts can be deleted",
+            response.json()["error"]["message"],
+        )
+        self.assertFalse(other_admin.is_deleted)
+
+    async def test_cannot_delete_own_account_endpoint(self) -> None:
+        response = await self.client.delete(
+            f"/api/v1/users/{self.admin.id}",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.json()["error"]["message"],
+            "Administrators cannot delete their own account",
+        )
+        self.assertFalse(self.admin.is_deleted)
 
     async def test_status_requires_boolean(self) -> None:
         response = await self.client.patch(

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.core.dependencies import get_report_service, require_roles
 from app.core.errors import api_error
@@ -12,9 +12,11 @@ from app.schemas.report import (
     DATE_PATTERN,
     MONTH_PATTERN,
     PERIODS,
+    REPORT_TYPES,
     DashboardQuery,
     ProductionReportQuery,
     ProfitReportQuery,
+    ReportExportQuery,
 )
 from app.services.report_service import ReportService
 
@@ -94,6 +96,25 @@ def parse_dashboard_query(request: Request) -> DashboardQuery:
     return DashboardQuery(date=_optional_date(params, "date"))
 
 
+def parse_export_query(request: Request) -> ReportExportQuery:
+    params = request.query_params
+
+    report_type = params.get("type", "profit")
+    if report_type not in REPORT_TYPES:
+        _validation_error(
+            'type: Invalid option: expected one of '
+            '"profit"|"production"|"dashboard"'
+        )
+
+    return ReportExportQuery(
+        report_type=report_type,
+        from_date=_optional_date(params, "from"),
+        to_date=_optional_date(params, "to"),
+        month=_optional_month(params),
+        date=_optional_date(params, "date"),
+    )
+
+
 @router.get("/profit", dependencies=[Depends(ADMIN)])
 async def profit_report(
     query: ProfitReportQuery = Depends(parse_profit_query),
@@ -117,3 +138,27 @@ async def dashboard_overview(
     service: ReportService = Depends(get_report_service),
 ) -> dict[str, Any]:
     return await service.get_dashboard(query, user)
+
+
+@router.get("/pdf")
+async def report_pdf(
+    query: ReportExportQuery = Depends(parse_export_query),
+    user: User = Depends(ANY_ROLE),
+    service: ReportService = Depends(get_report_service),
+) -> Response:
+    if query.report_type == "profit" and user.role != "admin":
+        raise api_error(
+            status.HTTP_403_FORBIDDEN,
+            "FORBIDDEN",
+            "Access denied: Requires one of [admin] role",
+        )
+
+    content, filename = await service.generate_report_pdf(query, user)
+    return Response(
+        content=content,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )

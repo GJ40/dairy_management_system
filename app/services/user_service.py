@@ -14,6 +14,7 @@ from app.schemas.user import (
     UserQuery,
     serialize_user,
 )
+from app.utils.time import utc_now_iso
 
 
 def parse_user_id(raw_id: str) -> int:
@@ -183,3 +184,50 @@ class UserService:
         await self._commit(creating=False)
         await self.repository.refresh(user)
         return serialize_user(user)
+
+    async def delete_user(
+        self,
+        raw_id: str,
+        current_user_id: int,
+    ) -> dict[str, Any]:
+        """Soft-delete an operator account (admin-only, guarded by the router).
+
+        Only operator accounts may be removed; admin accounts stay managed by
+        deactivation, which is the behaviour the PRD defines. The row is kept
+        so production, sales, wastage and expense history keeps its
+        ``recorded_by`` reference.
+        """
+        user_id = parse_user_id(raw_id)
+        user = await self.repository.get_by_id(user_id)
+        if user is None:
+            raise api_error(
+                status.HTTP_404_NOT_FOUND,
+                "NOT_FOUND",
+                f"User with id {raw_id} not found",
+            )
+
+        if user.id == current_user_id:
+            raise api_error(
+                status.HTTP_400_BAD_REQUEST,
+                "BAD_REQUEST",
+                "Administrators cannot delete their own account",
+            )
+
+        if user.role != "operator":
+            raise api_error(
+                status.HTTP_400_BAD_REQUEST,
+                "BAD_REQUEST",
+                "Only operator accounts can be deleted; deactivate admin "
+                "accounts instead",
+            )
+
+        user.is_deleted = True
+        user.is_active = False
+        await self._commit(creating=False)
+
+        return {
+            "message": f"User #{user.id} deleted successfully",
+            "resource": "users",
+            "id": user.id,
+            "deleted_at": utc_now_iso(),
+        }

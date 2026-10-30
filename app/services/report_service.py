@@ -14,11 +14,13 @@ from app.schemas.report import (
     DashboardQuery,
     ProductionReportQuery,
     ProfitReportQuery,
+    ReportExportQuery,
 )
 from app.services.buffalo_service import BuffaloService
 from app.services.production_service import ProductionService
 from app.services.stock_service import StockService
-from app.utils.time import get_business_date
+from app.utils.report_pdf import build_report_pdf, report_filename
+from app.utils.time import business_now, get_business_date
 
 
 def _decimal(value: Any) -> Decimal:
@@ -157,6 +159,61 @@ class ReportService:
             "category_breakdown": category_breakdown,
             "daily_breakdown": daily_breakdown,
         }
+
+    async def generate_report_pdf(
+        self,
+        query: ReportExportQuery,
+        user: User,
+    ) -> tuple[bytes, str]:
+        """Build a downloadable analytical PDF for the requested report type.
+
+        The report payload is produced by the same methods the JSON endpoints
+        use, so the PDF can never drift from the API numbers.
+        """
+        report_type = query.report_type
+        if report_type == "profit":
+            profit_query = ProfitReportQuery(
+                from_date=query.from_date,
+                to_date=query.to_date,
+                month=query.month,
+                date=query.date,
+            )
+            period_from, period_to = resolve_date_range(profit_query)
+            report = await self.get_profit_report(profit_query)
+        elif report_type == "production":
+            period_from, period_to = resolve_date_range(
+                ProfitReportQuery(
+                    from_date=query.from_date,
+                    to_date=query.to_date,
+                    month=query.month,
+                    date=query.date,
+                )
+            )
+            report = await self.get_production_report(
+                ProductionReportQuery(
+                    from_date=period_from,
+                    to_date=period_to,
+                )
+            )
+        else:
+            business_date = query.date or get_business_date()
+            period_from = business_date
+            period_to = business_date
+            report = await self.get_dashboard(
+                DashboardQuery(date=business_date),
+                user,
+            )
+
+        prepared_by = f"{user.full_name} ({user.role})"
+        content = build_report_pdf(
+            report_type=report_type,
+            report=report,
+            period_from=period_from,
+            period_to=period_to,
+            generated_at=business_now(),
+            prepared_by=prepared_by,
+        )
+        return content, report_filename(report_type, period_from, period_to)
 
     async def get_production_report(
         self,

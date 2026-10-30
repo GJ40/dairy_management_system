@@ -85,8 +85,15 @@ Rules: bcrypt cost 10 (72-byte truncation); JWT HS256 payload `{id,email,usernam
 | GET | `/users/:id` | — | `200 {user}` | 404 | Implemented (Phase 3) |
 | PUT | `/users/:id` | partial update incl. optional password | `200 {user}` | 404; 409 duplicate email/username; 400 | Implemented (Phase 3) |
 | PATCH | `/users/:id/status` | `{is_active: boolean}` | `200 {user}` | 400 trying to deactivate self; 404 | Implemented (Phase 3) |
+| DELETE | `/users/:id` | — | `200 {message,resource:"users",id,deleted_at}` | 400 deleting self; 400 target role is `admin`; 404 missing/deleted; 403 operator; 401 public | Implemented (Phase 13, Python only) |
 
-Rules: email lowercase; username uniqueness; password hashed with bcrypt cost 10; `password_hash` never serialized. `POST /users` ignores `is_active` and always creates active users; `role` is required. No delete/reset-password route exists in Node. User list/create/update/status return `createdAt`/`updatedAt`; `/auth/me` alone returns `created_at`/`updated_at`.
+Rules: email lowercase; username uniqueness; password hashed with bcrypt cost 10; `password_hash` never serialized. `POST /users` ignores `is_active` and always creates active users; `role` is required. User list/create/update/status return `createdAt`/`updatedAt`; `/auth/me` alone returns `created_at`/`updated_at`.
+
+`DELETE /users/:id` is a Python-only addition (Node has no user delete route; its generic
+`DELETE /:resource/:id` rejects `users`). It soft-deletes `operator` accounts by setting
+`is_deleted=true` and `is_active=false`, keeps the row so `recorded_by` history stays intact, and
+never cascades. Admin accounts are still managed by deactivation, and an admin cannot delete their
+own account.
 
 ---
 
@@ -258,8 +265,18 @@ validation in Node — preserved as a documented decision). `PUT` accepts partia
 | GET | `/reports/profit` | admin | `period?`, `from?`, `to?`, `month?` (`YYYY-MM`), `date?` | `200 {period,summary,category_breakdown,daily_breakdown}` | 400 invalid/ range | Implemented (Phase 10) |
 | GET | `/reports/production` | admin+operator | `from?`,`to?` | `200` production summary | 400 | Implemented (Phase 10) |
 | GET | `/reports/dashboard` | admin+operator | `date?` | `200` dashboard object; `financials` is `null` for operator | 400 | Implemented (Phase 10) |
+| GET | `/reports/pdf` | admin (`type=profit`), admin+operator (`type=production\|dashboard`) | `type?` (`profit\|production\|dashboard`, default `profit`), `from?`, `to?`, `month?`, `date?` | `200 application/pdf`, `Content-Disposition: attachment; filename="dairy-<type>-report-<from>[_to_<to>].pdf"` | 400 invalid `type`/date/range; 403 operator requesting `profit`; 401 | Implemented (Phase 13, Python only) |
 
 Profit: revenue = sum non-deleted sales in range; expenses = sum non-deleted expenses in range; profit = revenue − expenses; daily and category breakdowns; precedence `date` > `month` > `from/to` > current month; `period` is ignored by Node. Dashboard includes today's production, stock, sales, active buffalo count.
+
+`GET /reports/pdf` is a Python-only addition (Node exports no report PDFs). It renders the same
+payload the JSON routes return, so the PDF cannot drift from the API. Range resolution matches
+`/reports/profit`; `type=dashboard` uses `date` when supplied and otherwise the end of the resolved
+range's day. The document has a title/meta block, KPI strip, executive summary, A4 tables with
+repeating headers, vector bar charts (revenue vs. expenses, expense categories, morning vs. evening
+production), page numbering and a deliberate "No data for the selected period" block for empty
+ranges. Rupee values are printed as `Rs. 1,234.00` because the base-14 PDF fonts do not carry the
+U+20B9 glyph.
 
 ---
 
@@ -269,7 +286,7 @@ Profit: revenue = sum non-deleted sales in range; expenses = sum non-deleted exp
 | --- | --- | --- | --- | --- | --- |
 | DELETE | `/:resource/:id` | resource in allowlist | `200 {message,resource,id,deleted_at}` | 400 `UNSUPPORTED_RESOURCE`; 404 `NOT_FOUND`; 403 operator | Implemented (Phase 4) |
 
-Allowlist: `buffaloes`, `customers`, `sales`, `invoices`, `expenses`, `production`, `wastage`. Admin only; sets `is_deleted=true` without cascading. `deleted_at` is UTC ISO. Node's not-found singularization strips only the final character (`buffaloe`, `productio`, `wastag`); preserved. Node has no user delete route, so user IDs reach the generic handler and are unsupported.
+Allowlist: `buffaloes`, `customers`, `sales`, `invoices`, `expenses`, `production`, `wastage`. Admin only; sets `is_deleted=true` without cascading. `deleted_at` is UTC ISO. Node's not-found singularization strips only the final character (`buffaloe`, `productio`, `wastag`); preserved. `users` is intentionally not in this allowlist: user deletion has its own guarded `DELETE /users/:id` route (operator targets only), and `DELETE /users/:id` on the users router takes precedence over the generic `DELETE /:resource/:id`.
 
 ---
 
@@ -291,6 +308,9 @@ Cross-module scenarios:
 10. Exact JSON types: DECIMAL as string, booleans, nulls, ISO timestamps.
 
 Parity tests are implemented for Phases 1–11 with `pytest` (`210 passed`, 94 subtests) plus read-only
-live DB/service smoke checks. Phases 9–11 are covered by unit/API tests only so far; their live Node
+live DB/service smoke checks. Phase 13 adds tests for user deletion, report PDFs and invoice PDF
+layout; they have **not been run yet** in the session that wrote them (the agent's shell could not
+start), so the expected count is 233, not a verified result. Phases 9–11 are covered by unit/API
+tests only so far; their live Node
 comparison is still outstanding. The Node suite is not run because it targets and mutates the live MySQL
 database.

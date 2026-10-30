@@ -22,9 +22,11 @@ from app.schemas.report import (
     DashboardQuery,
     ProductionReportQuery,
     ProfitReportQuery,
+    ReportExportQuery,
 )
 from app.services.production_service import ProductionService
 from app.services.report_service import ReportService, resolve_date_range
+from app.utils.report_pdf import build_report_pdf
 from app.utils.time import get_business_date
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
@@ -487,6 +489,105 @@ class DashboardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(report["date"], TODAY)
 
 
+class ReportPdfTests(unittest.IsolatedAsyncioTestCase):
+    async def test_profit_report_pdf(self) -> None:
+        service = build_report_service(build_profit_repository())
+        admin = make_user()
+        content, filename = await service.generate_report_pdf(
+            ReportExportQuery(report_type="profit", month="2026-10"),
+            admin,
+        )
+        self.assertTrue(content.startswith(b"%PDF-"))
+        self.assertGreater(len(content), 2000)
+        self.assertTrue(content.rstrip().endswith(b"%%EOF"))
+        self.assertEqual(
+            filename,
+            "dairy-profit-report-2026-10-01_to_2026-10-31.pdf",
+        )
+
+    async def test_production_report_pdf(self) -> None:
+        service = build_report_service(
+            production_rows=[
+                (date(2026, 10, 1), "morning", Decimal("10.00")),
+                (date(2026, 10, 1), "evening", Decimal("5.00")),
+                (date(2026, 10, 2), "morning", Decimal("8.00")),
+            ]
+        )
+        operator = make_user(2, role="operator", username="ramesh_operator")
+        content, filename = await service.generate_report_pdf(
+            ReportExportQuery(
+                report_type="production",
+                from_date="2026-10-01",
+                to_date="2026-10-02",
+            ),
+            operator,
+        )
+        self.assertTrue(content.startswith(b"%PDF-"))
+        self.assertGreater(len(content), 1500)
+        self.assertTrue(content.rstrip().endswith(b"%%EOF"))
+        self.assertEqual(
+            filename,
+            "dairy-production-report-2026-10-01_to_2026-10-02.pdf",
+        )
+
+    async def test_dashboard_report_pdf(self) -> None:
+        repository = FakeReportRepository()
+        repository.production = [
+            ("morning", Decimal("10.00")),
+            ("evening", Decimal("5.50")),
+        ]
+        repository.sales_today = (
+            3,
+            Decimal("12.50"),
+            Decimal("625.00"),
+        )
+        service = build_report_service(repository)
+        admin = make_user()
+        content, filename = await service.generate_report_pdf(
+            ReportExportQuery(report_type="dashboard", date="2026-10-29"),
+            admin,
+        )
+        self.assertTrue(content.startswith(b"%PDF-"))
+        self.assertGreater(len(content), 1200)
+        self.assertEqual(filename, "dairy-dashboard-report-2026-10-29.pdf")
+
+    async def test_production_pdf_without_data_still_builds(self) -> None:
+        service = build_report_service()
+        content, _ = await service.generate_report_pdf(
+            ReportExportQuery(
+                report_type="production",
+                from_date="2025-01-01",
+                to_date="2025-01-31",
+            ),
+            make_user(),
+        )
+        self.assertTrue(content.startswith(b"%PDF-"))
+
+    def test_empty_period_pdf_states_no_data(self) -> None:
+        report = {
+            "period": {"from": "2025-01-01", "to": "2025-01-31"},
+            "summary": {
+                "total_revenue": "0.00",
+                "total_expenses": "0.00",
+                "net_profit": "0.00",
+                "total_litres_sold": "0.00",
+            },
+            "category_breakdown": [],
+            "daily_breakdown": [],
+        }
+        content = build_report_pdf(
+            report_type="profit",
+            report=report,
+            period_from="2025-01-01",
+            period_to="2025-01-31",
+            generated_at=datetime(2026, 10, 29, 14, 5),
+            prepared_by="System Admin (admin)",
+            compress=False,
+        )
+        self.assertTrue(content.startswith(b"%PDF-"))
+        self.assertIn(b"No data", content)
+
+
 class ApiTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.repository = build_profit_repository()
@@ -618,6 +719,67 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             response.json()["error"]["code"], "INVALID_DATE_RANGE"
         )
+
+    async def test_report_pdf_download(self) -> None:
+        response = await self.client.get(
+            "/api/v1/reports/pdf?type=profit&month=2026-10",
+            headers=self._auth(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/pdf")
+        self.assertIn("attachment", response.headers["content-disposition"])
+        self.assertIn(
+            "dairy-profit-report-2026-10-01_to_2026-10-31.pdf",
+            response.headers["content-disposition"],
+        )
+        self.assertTrue(response.content.startswith(b"%PDF-"))
+        self.assertGreater(len(response.content), 2000)
+
+    async def test_report_pdf_roles_and_validation(self) -> None:
+        forbidden = await self.client.get(
+            "/api/v1/reports/pdf?type=profit&month=2026-10",
+            headers=self._auth(self.operator),
+        )
+        self.assertEqual(forbidden.status_code, 403)
+        self.assertEqual(
+            forbidden.json()["error"]["message"],
+            "Access denied: Requires one of [admin] role",
+        )
+
+        production = await self.client.get(
+            "/api/v1/reports/pdf?type=production&from=2026-10-01&to=2026-10-02",
+            headers=self._auth(self.operator),
+        )
+        self.assertEqual(production.status_code, 200)
+        self.assertTrue(production.content.startswith(b"%PDF-"))
+
+        dashboard = await self.client.get(
+            "/api/v1/reports/pdf?type=dashboard&date=2026-10-29",
+            headers=self._auth(self.operator),
+        )
+        self.assertEqual(dashboard.status_code, 200)
+
+        bad_type = await self.client.get(
+            "/api/v1/reports/pdf?type=weekly",
+            headers=self._auth(),
+        )
+        self.assertEqual(bad_type.status_code, 400)
+        self.assertEqual(
+            bad_type.json()["error"]["message"],
+            'type: Invalid option: expected one of '
+            '"profit"|"production"|"dashboard"',
+        )
+
+        bad_date = await self.client.get(
+            "/api/v1/reports/pdf?type=profit&from=bad",
+            headers=self._auth(),
+        )
+        self.assertEqual(bad_date.status_code, 400)
+
+        unauthenticated = await self.client.get(
+            "/api/v1/reports/pdf?type=production"
+        )
+        self.assertEqual(unauthenticated.status_code, 401)
 
 
 if __name__ == "__main__":

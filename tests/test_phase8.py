@@ -27,6 +27,7 @@ from app.schemas.invoice import (
     RecordPaymentRequest,
 )
 from app.services.invoice_service import InvoiceService
+from app.utils.pdf import build_invoice_pdf
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
 
@@ -762,6 +763,141 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                     response.json()["error"]["message"],
                     expected,
                 )
+
+
+class InvoicePdfLayoutTests(unittest.TestCase):
+    """Rendering smoke tests for the redesigned invoice document."""
+
+    @staticmethod
+    def _invoice(**overrides: str) -> dict:
+        invoice = {
+            "id": 1,
+            "invoice_no": "INV-20261028-AB12",
+            "customer_id": 1,
+            "period_start": "2026-10-01",
+            "period_end": "2026-10-28",
+            "total_amount": "1200.00",
+            "paid_amount": "500.00",
+            "status": "partial",
+            "balance": "700.00",
+            "createdAt": "2026-10-28T06:40:23.000Z",
+        }
+        invoice.update(overrides)
+        return invoice
+
+    @staticmethod
+    def _sales(count: int) -> list[dict]:
+        rows = []
+        for index in range(1, count + 1):
+            rows.append(
+                {
+                    "id": index,
+                    "sale_date": f"2026-10-{(index % 28) + 1:02d}",
+                    "litres": "12.50",
+                    "rate": "60.00",
+                    "amount": "750.00",
+                    "payment_status": "unpaid",
+                }
+            )
+        return rows
+
+    @staticmethod
+    def _customer(**overrides: object) -> dict:
+        customer: dict = {
+            "id": 1,
+            "name": "Ramesh Dairy",
+            "phone": "9876543210",
+            "address": "Main Road, Anand",
+            "rate_per_litre": "60.00",
+            "is_active": True,
+        }
+        customer.update(overrides)
+        return customer
+
+    def _assert_pdf(self, content: bytes, minimum: int = 1000) -> None:
+        self.assertTrue(content.startswith(b"%PDF-"))
+        self.assertGreater(len(content), minimum)
+        self.assertTrue(content.rstrip().endswith(b"%%EOF"))
+
+    def test_partial_payment_invoice(self) -> None:
+        content = build_invoice_pdf(
+            invoice=self._invoice(),
+            customer=self._customer(),
+            sales=self._sales(2),
+        )
+        self._assert_pdf(content)
+
+    def test_fully_paid_and_overpaid_invoice(self) -> None:
+        for paid in ("1200.00", "1500.00"):
+            with self.subTest(paid=paid):
+                content = build_invoice_pdf(
+                    invoice=self._invoice(paid_amount=paid, status="paid"),
+                    customer=self._customer(),
+                    sales=self._sales(2),
+                )
+                self._assert_pdf(content)
+
+    def test_long_customer_and_many_rows_paginate(self) -> None:
+        content = build_invoice_pdf(
+            invoice=self._invoice(),
+            customer=self._customer(
+                name="Shri Krishna Cooperative Milk & Dairy Farm <Unit 2> " * 2,
+                address="Plot 12, Industrial Estate, " * 12,
+            ),
+            sales=self._sales(60),
+        )
+        self._assert_pdf(content, minimum=2500)
+
+    def test_missing_optional_customer_fields(self) -> None:
+        content = build_invoice_pdf(
+            invoice=self._invoice(paid_amount="0.00", status="unpaid"),
+            customer=self._customer(phone=None, address=None),
+            sales=self._sales(1),
+        )
+        self._assert_pdf(content)
+
+    def test_invoice_without_linked_sales(self) -> None:
+        content = build_invoice_pdf(
+            invoice=self._invoice(total_amount="0.00", paid_amount="0.00"),
+            customer=self._customer(),
+            sales=[],
+        )
+        self._assert_pdf(content)
+
+    def test_invoice_accepts_orm_like_objects(self) -> None:
+        customer = make_customer()
+        sale = Sale(
+            id=1,
+            customer_id=1,
+            sale_date=date(2026, 10, 5),
+            litres=Decimal("12.50"),
+            rate=Decimal("50.00"),
+            amount=Decimal("625.00"),
+            payment_status="unpaid",
+            recorded_by=1,
+            is_deleted=False,
+            created_at=CREATED,
+            updated_at=CREATED,
+        )
+        invoice = Invoice(
+            id=1,
+            invoice_no="INV-20261028-AB12",
+            customer_id=1,
+            period_start=date(2026, 10, 1),
+            period_end=date(2026, 10, 28),
+            total_amount=Decimal("625.00"),
+            paid_amount=Decimal("0.00"),
+            status="unpaid",
+            is_deleted=False,
+            created_at=CREATED,
+            updated_at=CREATED,
+        )
+        content = build_invoice_pdf(
+            invoice=invoice,
+            customer=customer,
+            sales=[sale],
+        )
+        self._assert_pdf(content)
 
 
 if __name__ == "__main__":

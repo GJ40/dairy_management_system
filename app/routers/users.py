@@ -149,3 +149,13 @@ async def update_user_status(
             current_user.id,
         )
     }
+
+
+@router.delete("/{user_id}")
+async def delete_user(
+    user_id: str,
+    current_user: User = Depends(require_admin),
+    service: UserService = Depends(get_user_service),
+) -> dict[str, Any]:
+    """Soft-delete an operator user. Admin-only; target role is re-checked here."""
+    return await service.delete_user(user_id, current_user.id)

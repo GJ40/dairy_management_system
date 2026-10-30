@@ -24,6 +24,7 @@
 | 10 | Dashboard + reports | **COMPLETE** |
 | 11 | Faker seeders | **COMPLETE** (live fake-seed run pending) |
 | 12 | Parity audit + handoff | **COMPLETE** |
+| 13 | Feature fixes: operator deletion, report PDFs, invoice PDF | **IMPLEMENTED — tests not yet run** |
 
 Phase 1 is complete: configuration, async DB session, error handlers, middleware, health, docs,
 `.env.example`, and stdlib tests are implemented. Phase 2 is complete: all 10 models match the live
@@ -687,11 +688,51 @@ role guard, envelope, and error codes. Test coverage per phase:
 
 Final state: **210 passed**, 94 subtests, `ruff` clean, `compileall` clean.
 
+## Phase 13 — feature fixes (operator deletion, report PDFs, invoice PDF)
+
+Plan and progress: `../docs/FEATURE_FIX_PLAN.md`, `../docs/FEATURE_FIX_PROGRESS.md`.
+
+Created/changed:
+
+- `app/services/user_service.py` — `delete_user`: soft deletes operator accounts only
+  (`is_deleted=true`, `is_active=false`), 400 for self-deletion, 400 for admin targets, 404 for
+  missing/non-numeric/already-deleted ids.
+- `app/routers/users.py` — `DELETE /users/{user_id}` behind the router's `require_admin` guard,
+  registered before the generic `DELETE /{resource}/{id}` route.
+- `app/schemas/report.py` — `REPORT_TYPES`, `REPORT_TYPE_LABELS`, `ReportExportQuery`.
+- `app/utils/report_pdf.py` (new) — ReportLab platypus report builder: KPI strip, executive
+  summary, A4 tables with repeating headers, vector charts (`reportlab.graphics`), 12-bar bucket
+  cap, "Page X of Y" footer and an explicit no-data block.
+- `app/services/report_service.py` — `generate_report_pdf` reusing the JSON report methods so the
+  PDF and API figures cannot diverge; `dairy-<type>-report-<range>.pdf` filenames.
+- `app/routers/reports.py` — `GET /reports/pdf` with `type=profit|production|dashboard`, admin-only
+  profit, `application/pdf` + `attachment` + `no-store`, project 400 validation envelopes.
+- `app/utils/pdf.py` — invoice rewritten on platypus: no invented business/tax details, wrapped
+  descriptions, repeating table header, right-aligned totals block with balance due, payment status,
+  page numbers, `Decimal`/`ROUND_HALF_UP` money.
+- `tests/test_phase3.py`, `tests/test_phase8.py`, `tests/test_phase10.py` — new regression tests.
+
+Python-only additions (Node has neither): `DELETE /users/:id`, `GET /reports/pdf`. Documented in
+`API_PARITY.md`. No schema, dependency or lockfile change.
+
+Verification: **NOT RUN.** The agent's command runner cannot start in this environment
+("Bash is required but was not found on this Windows system"), so `pytest`, `ruff` and
+`compileall` still need to be executed by hand:
+
+```powershell
+cd backend_py
+uv run pytest -q
+uv run ruff check app tests
+uv run python -m compileall -q app tests
+```
+
 ## Next step
 
-1. Optional: run the fake seeder against MySQL (`uv run python -m app.seeders.fake_indian_data`) to
+1. **Run the Phase 13 verification commands above** and record the real test count/ruff result.
+2. Optional: run the fake seeder against MySQL (`uv run python -m app.seeders.fake_indian_data`) to
    populate demo data; it writes rows and needs approval.
-2. Optional: live side-by-side comparison of the Phase 9–11 endpoints and reports against Node.
-3. Outstanding product decisions are listed in `HANDOFF.md` §6.
+3. Optional: live side-by-side comparison of the Phase 9–11 endpoints and reports against Node.
+4. Outstanding product decisions are listed in `HANDOFF.md` §6; the frontend invoice-creation gap
+   (missing `period_start`/`period_end`) is recorded in `../docs/FEATURE_FIX_PROGRESS.md`.
 
 No further live DDL, migration, or seed will run without separate approval.
