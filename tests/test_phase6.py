@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 import app.models  # noqa: F401
+from app.core.config import settings
 from app.core.dependencies import (
     get_stock_repository,
     get_wastage_repository,
@@ -414,7 +415,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             username=target.username,
             role=target.role,
         )
-        return {"Authorization": f"Bearer {token}"}
+        return {
+            "Authorization": f"Bearer {token}",
+            "Cookie": f"{settings.refresh_cookie_name}=test-session",
+        }
 
     async def test_stock_and_history(self) -> None:
         response = await self.client.get(

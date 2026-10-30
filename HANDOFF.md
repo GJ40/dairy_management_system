@@ -26,8 +26,18 @@ OpenAPI document; `/health` and the docs routes stay public and unmarked.
 
 Configuration is read from `backend_py/.env` (see `.env.example`). Variable names:
 `NODE_ENV`, `PORT`, `TZ`, `DATABASE_URL` or `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`,
-`DB_LOGGING`, `CORS_ORIGINS`, `JWT_SECRET`, `JWT_EXPIRE_MINUTES`,
+`DB_LOGGING`, `DB_POOL_SIZE`/`DB_MAX_OVERFLOW`/`DB_POOL_TIMEOUT`/`DB_POOL_RECYCLE`,
+`CORS_ORIGINS`, `BODY_LIMIT_BYTES`, `BCRYPT_ROUNDS`, `JWT_SECRET`, `ACCESS_TOKEN_EXPIRE_MINUTES`,
+`REFRESH_TOKEN_EXPIRE_MINUTES`, `REFRESH_COOKIE_NAME`/`REFRESH_COOKIE_PATH`/
+`REFRESH_COOKIE_DOMAIN`/`REFRESH_COOKIE_SAMESITE`/`REFRESH_COOKIE_SECURE`,
 `ADMIN_NAME`/`ADMIN_USERNAME`/`ADMIN_EMAIL`/`ADMIN_PASSWORD`, `API_V1_PREFIX`.
+
+The login response carries the 30-minute access token in the body; the 8-hour refresh token
+is only ever an httpOnly cookie scoped to `/api/v1`. Every guarded route requires both: a valid
+`Authorization: Bearer <access token>` and the presence of that `dairy_refresh_token` cookie, so
+deleting the cookie ends the session even while the access token is valid. `POST
+/api/v1/auth/refresh` trades the cookie for a new access token and `POST /api/v1/auth/logout`
+clears it.
 
 ## 2. Verify
 

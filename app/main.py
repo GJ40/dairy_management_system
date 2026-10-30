@@ -52,7 +52,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.BODY_LIMIT_BYTES)
+    app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.body_limit_bytes)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(
         CORSMiddleware,

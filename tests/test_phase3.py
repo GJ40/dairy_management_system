@@ -232,11 +232,12 @@ class AuthServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_login_success(self) -> None:
         result = await self.service.login("ADMIN@EXAMPLE.COM ", PASSWORD)
-        self.assertIn("token", result)
+        self.assertIn("access_token", result)
+        self.assertNotIn("token", result)
         self.assertEqual(result["user"]["email"], "admin@example.com")
         self.assertEqual(result["user"]["createdAt"], "2026-10-28T06:40:23.123Z")
         self.assertNotIn("password_hash", result["user"])
-        payload = decode_access_token(result["token"])
+        payload = decode_access_token(result["access_token"])
         self.assertEqual(payload["id"], self.admin.id)
 
     async def test_login_wrong_password(self) -> None:
@@ -527,7 +528,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             username=target.username,
             role=target.role,
         )
-        return {"Authorization": f"Bearer {token}"}
+        return {
+            "Authorization": f"Bearer {token}",
+            "Cookie": f"{settings.refresh_cookie_name}=test-session",
+        }
 
     async def test_login_success(self) -> None:
         response = await self.client.post(
@@ -536,7 +540,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertIn("token", body)
+        self.assertIn("access_token", body)
+        self.assertNotIn("token", body)
         self.assertEqual(
             list(body["user"]),
             [

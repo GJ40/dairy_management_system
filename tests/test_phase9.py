@@ -8,6 +8,7 @@ import httpx
 from fastapi import HTTPException
 
 import app.models  # noqa: F401
+from app.core.config import settings
 from app.core.dependencies import (
     get_expense_category_repository,
     get_expense_repository,
@@ -521,7 +522,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             username=target.username,
             role=target.role,
         )
-        return {"Authorization": f"Bearer {token}"}
+        return {
+            "Authorization": f"Bearer {token}",
+            "Cookie": f"{settings.refresh_cookie_name}=test-session",
+        }
 
     async def test_categories(self) -> None:
         listing = await self.client.get(

@@ -21,7 +21,7 @@ customers/sales (Phase 7), invoices/payments/PDF (Phase 8), expenses (Phase 9), 
 | Prefix | `/api/v1`; health also at `/health` |
 | Content type | JSON except invoice PDF (`application/pdf`) and docs HTML |
 | Auth header | `Authorization: Bearer <jwt>` |
-| JWT payload | `{ id, email, username, role }`; HS256; no `sub`; expiry `JWT_EXPIRE_MINUTES` (default 480) |
+| JWT payload | `{ id, email, username, role, type, jti }`; HS256; no `sub`; access token `ACCESS_TOKEN_EXPIRE_MINUTES` (default 30), refresh token `REFRESH_TOKEN_EXPIRE_MINUTES` (default 480) delivered as an httpOnly cookie |
 | Roles | `admin`, `operator` |
 | Success format | **Not uniform.** Preserve each route's envelope (see tables). |
 | Error format | `{"error":{"code":"...","message":"...","details"?:...}}` |
@@ -69,10 +69,12 @@ Health notes: `uptime_seconds` is process uptime, rounded/floored per Node; `tim
 
 | Method | Path | Auth | Request | Success | Errors | Status |
 | --- | --- | --- | --- | --- | --- | --- |
-| POST | `/auth/login` | public | `{email: string(email), password: string(min 1)}`; email trimmed/lowercased | `200 {token, user}`; user excludes `password_hash`; `createdAt`/`updatedAt` | 400 `VALIDATION_ERROR`; 401 `UNAUTHORIZED` generic "Invalid email or password"; 401 `UNAUTHORIZED` "Account is deactivated. Please contact an administrator." for inactive; soft-deleted user treated as invalid | Implemented (Phase 3) |
-| GET | `/auth/me` | any | — | `200 {user}`; `created_at`/`updated_at` (Node quirk) | 401 `UNAUTHORIZED` if missing/invalid token, deleted or inactive user | Implemented (Phase 3) |
+| POST | `/auth/login` | public | `{email: string(email), password: string(min 1)}`; email trimmed/lowercased | `200 {access_token, token_type, expires_in, user}`; the refresh token is never in the body, only in `Set-Cookie: <REFRESH_COOKIE_NAME>=<refresh jwt>` (httpOnly, path `/api/v1`, 8 h); user excludes `password_hash`; `createdAt`/`updatedAt` | 400 `VALIDATION_ERROR`; 401 `UNAUTHORIZED` generic "Invalid email or password"; 401 `UNAUTHORIZED` "Account is deactivated. Please contact an administrator." for inactive; soft-deleted user treated as invalid | Implemented (Phase 3, dual-token) |
+| POST | `/auth/refresh` | refresh cookie | none — httpOnly `dairy_refresh_token` cookie only (no body, no `Authorization` header) | `200 {access_token, token_type, expires_in, user}`; refresh token never returned in the body; cookie left in place | 401 `UNAUTHORIZED` "Refresh token not provided" / "Invalid refresh token" / "Refresh token has expired"; cookie cleared on failure; deleted or inactive user rejected | Implemented |
+| POST | `/auth/logout` | public | — | `200 {message}`; refresh cookie cleared | — | Implemented |
+| GET | `/auth/me` | any | — | `200 {user}`; `created_at`/`updated_at` (Node quirk) | 401 `UNAUTHORIZED` if missing/invalid token, missing refresh cookie, deleted or inactive user | Implemented (Phase 3) |
 
-Rules: bcrypt cost 10 (72-byte truncation); JWT HS256 payload `{id,email,username,role,iat,exp}`, expiry `JWT_EXPIRE_MINUTES`; reload user from DB every request; reject deleted/inactive; `requireRoles` returns 403 `FORBIDDEN` with `Access denied: Requires one of [admin] role`.
+Rules: bcrypt cost 10 (72-byte truncation); JWT HS256 payload `{id,email,username,role,type,jti,iat,exp}`; `type` is `access` or `refresh` and a refresh token is rejected by the bearer dependency; reload user from DB every request; a valid access token is not enough — the `dairy_refresh_token` cookie must also be present or the request gets 401 `UNAUTHORIZED` "Refresh token cookie is missing; sign in again"; reject deleted/inactive; `requireRoles` returns 403 `FORBIDDEN` with `Access denied: Requires one of [admin] role`.
 
 ---
 

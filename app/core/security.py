@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -8,8 +9,10 @@ import jwt
 
 from app.core.config import settings
 
-BCRYPT_ROUNDS = 10
 JWT_ALGORITHM = "HS256"
+
+ACCESS_TOKEN_TYPE = "access"
+REFRESH_TOKEN_TYPE = "refresh"
 
 
 def _password_bytes(password: str) -> bytes:
@@ -17,7 +20,10 @@ def _password_bytes(password: str) -> bytes:
 
 
 def hash_password(password: str) -> str:
-    hashed = bcrypt.hashpw(_password_bytes(password), bcrypt.gensalt(rounds=BCRYPT_ROUNDS))
+    hashed = bcrypt.hashpw(
+        _password_bytes(password),
+        bcrypt.gensalt(rounds=settings.bcrypt_rounds),
+    )
     return hashed.decode("utf-8")
 
 
@@ -28,12 +34,14 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def create_access_token(
+def _encode_token(
     *,
     user_id: int,
     email: str,
     username: str,
     role: str,
+    token_type: str,
+    expires_in: timedelta,
 ) -> str:
     now = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
@@ -41,8 +49,10 @@ def create_access_token(
         "email": email,
         "username": username,
         "role": role,
+        "type": token_type,
+        "jti": secrets.token_urlsafe(16),
         "iat": now,
-        "exp": now + timedelta(minutes=settings.jwt_expire_minutes),
+        "exp": now + expires_in,
     }
     return jwt.encode(
         payload,
@@ -51,9 +61,54 @@ def create_access_token(
     )
 
 
-def decode_access_token(token: str) -> dict[str, Any]:
-    return jwt.decode(
+def create_access_token(
+    *,
+    user_id: int,
+    email: str,
+    username: str,
+    role: str,
+) -> str:
+    return _encode_token(
+        user_id=user_id,
+        email=email,
+        username=username,
+        role=role,
+        token_type=ACCESS_TOKEN_TYPE,
+        expires_in=timedelta(minutes=settings.access_token_expire_minutes),
+    )
+
+
+def create_refresh_token(
+    *,
+    user_id: int,
+    email: str,
+    username: str,
+    role: str,
+) -> str:
+    return _encode_token(
+        user_id=user_id,
+        email=email,
+        username=username,
+        role=role,
+        token_type=REFRESH_TOKEN_TYPE,
+        expires_in=timedelta(minutes=settings.refresh_token_expire_minutes),
+    )
+
+
+def decode_token(token: str, *, expected_type: str) -> dict[str, Any]:
+    payload = jwt.decode(
         token,
         settings.jwt_secret.get_secret_value(),
         algorithms=[JWT_ALGORITHM],
     )
+    if payload.get("type") != expected_type:
+        raise jwt.InvalidTokenError(f"Expected a {expected_type} token")
+    return payload
+
+
+def decode_access_token(token: str) -> dict[str, Any]:
+    return decode_token(token, expected_type=ACCESS_TOKEN_TYPE)
+
+
+def decode_refresh_token(token: str) -> dict[str, Any]:
+    return decode_token(token, expected_type=REFRESH_TOKEN_TYPE)

@@ -8,6 +8,7 @@ import httpx
 from fastapi import HTTPException
 
 import app.models  # noqa: F401
+from app.core.config import settings
 from app.core.dependencies import (
     get_buffalo_service,
     get_production_service,
@@ -621,7 +622,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             username=target.username,
             role=target.role,
         )
-        return {"Authorization": f"Bearer {token}"}
+        return {
+            "Authorization": f"Bearer {token}",
+            "Cookie": f"{settings.refresh_cookie_name}=test-session",
+        }
 
     async def test_profit_report_is_admin_only(self) -> None:
         forbidden = await self.client.get(

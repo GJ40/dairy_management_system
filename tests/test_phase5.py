@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 import app.models  # noqa: F401
+from app.core.config import settings
 from app.core.dependencies import get_buffalo_repository, get_production_repository
 from app.core.security import create_access_token
 from app.db.session import get_db
@@ -609,7 +610,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             username=target.username,
             role=target.role,
         )
-        return {"Authorization": f"Bearer {token}"}
+        return {
+            "Authorization": f"Bearer {token}",
+            "Cookie": f"{settings.refresh_cookie_name}=test-session",
+        }
 
     async def test_grid(self) -> None:
         response = await self.client.get(

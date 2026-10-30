@@ -5,6 +5,7 @@ from fastapi import Depends, Request, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import api_error
 from app.core.security import decode_access_token
 from app.db.session import get_db
@@ -38,8 +39,12 @@ from app.services.wastage_service import WastageService
 bearer_scheme = HTTPBearer(
     scheme_name="BearerAuth",
     description=(
-        "JWT access token from POST /api/v1/auth/login. Paste the token only; "
-        "Swagger sends it as 'Authorization: Bearer <token>'."
+        "Short-lived access token from POST /api/v1/auth/login (or "
+        "POST /api/v1/auth/refresh). Paste the token only; Swagger sends it as "
+        "'Authorization: Bearer <token>'. Every guard also requires the httpOnly "
+        "dairy_refresh_token session cookie, so sign in through POST "
+        "/api/v1/auth/login in this browser before calling protected routes. "
+        "Refresh tokens are not accepted here."
     ),
     auto_error=False,
 )
@@ -80,6 +85,16 @@ async def get_current_user(
             "UNAUTHORIZED",
             "Invalid authentication token",
         ) from exc
+
+    # A bare access token is not a session: the httpOnly refresh cookie is the
+    # half that proves the browser still holds one. Removing that cookie signs
+    # the session out immediately, even while the access token is still valid.
+    if not request.cookies.get(settings.refresh_cookie_name):
+        raise api_error(
+            status.HTTP_401_UNAUTHORIZED,
+            "UNAUTHORIZED",
+            "Refresh token cookie is missing; sign in again",
+        )
 
     try:
         user_id = int(payload.get("id"))

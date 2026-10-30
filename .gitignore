@@ -12,3 +12,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local environment secrets
+.env
+.env.*
+!.env.example
