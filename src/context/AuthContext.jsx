@@ -1,70 +1,83 @@
 import { useState, useEffect, useCallback } from 'react';
 import { AuthContext } from './authContextDef';
-import { loginApi, getMeApi } from '../api/auth';
-import { TOKEN_STORAGE_KEY, USER_STORAGE_KEY } from '../api/client';
+import { loginApi, logoutApi, getMeApi } from '../api/auth';
+import {
+  hasSessionHint,
+  refreshSession,
+  setAccessToken as setClientAccessToken,
+  setAuthFailureHandler,
+} from '../api/client';
+
+// Tokens used to live in localStorage; drop any leftovers from older builds.
+const LEGACY_STORAGE_KEYS = ['dairy_auth_token', 'dairy_auth_user'];
 
 export function AuthProvider({ children }) {
-  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_STORAGE_KEY));
-  const [user, setUser] = useState(() => {
-    const saved = localStorage.getItem(USER_STORAGE_KEY);
-    if (!saved) return null;
-    try {
-      return JSON.parse(saved);
-    } catch {
-      return null;
-    }
-  });
+  // Access token is intentionally kept in memory only (30 min lifetime).
+  const [accessToken, setAccessToken] = useState(null);
+  const [user, setUser] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [authError, setAuthError] = useState(null);
 
-  const logout = useCallback(() => {
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
-    localStorage.removeItem(USER_STORAGE_KEY);
-    setToken(null);
+  const clearSession = useCallback(() => {
+    setClientAccessToken(null);
+    setAccessToken(null);
     setUser(null);
-    setAuthError(null);
   }, []);
 
-  // Listen for 401 unauthorized events emitted from API client
-  useEffect(() => {
-    const handleUnauthorized = () => {
-      logout();
-    };
-    window.addEventListener('auth:unauthorized', handleUnauthorized);
-    return () => {
-      window.removeEventListener('auth:unauthorized', handleUnauthorized);
-    };
-  }, [logout]);
+  const logout = useCallback(async () => {
+    clearSession();
+    setAuthError(null);
+    try {
+      // Drop the httpOnly refresh cookie so the session cannot be revived.
+      await logoutApi();
+    } catch {
+      // Cookie already gone or unreachable — local state is cleared regardless.
+    }
+  }, [clearSession]);
 
-  // Bootstrap current user session on initial mount
+  // The API client gives up on the session when refreshing fails.
+  useEffect(() => {
+    setAuthFailureHandler(() => {
+      clearSession();
+      setAuthError('Your session has expired. Please sign in again.');
+    });
+    return () => setAuthFailureHandler(null);
+  }, [clearSession]);
+
   useEffect(() => {
     let isMounted = true;
 
+    try {
+      LEGACY_STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+    } catch {
+      // Storage can be unavailable (private mode); nothing to clean up then.
+    }
+
+    // No access token survives a reload, so redeem the refresh cookie instead
+    // — but only when the API has left its session hint cookie behind.
     async function bootstrap() {
-      const storedToken = localStorage.getItem(TOKEN_STORAGE_KEY);
-      if (!storedToken) {
+      if (!hasSessionHint()) {
         if (isMounted) setIsLoading(false);
         return;
       }
 
       try {
-        const response = await getMeApi();
-        if (isMounted) {
-          if (response?.user) {
-            setUser(response.user);
-            localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(response.user));
-          } else {
-            logout();
-          }
+        const session = await refreshSession();
+        if (!isMounted) return;
+
+        setAccessToken(session.accessToken);
+        const profile = session.user || (await getMeApi())?.user || null;
+        if (!isMounted) return;
+
+        if (!profile) {
+          clearSession();
+          return;
         }
+        setUser(profile);
       } catch {
-        if (isMounted) {
-          logout();
-        }
+        if (isMounted) clearSession();
       } finally {
-        if (isMounted) {
-          setIsLoading(false);
-        }
+        if (isMounted) setIsLoading(false);
       }
     }
 
@@ -73,20 +86,21 @@ export function AuthProvider({ children }) {
     return () => {
       isMounted = false;
     };
-  }, [logout]);
+  }, [clearSession]);
 
   const login = async (email, password) => {
     setAuthError(null);
     try {
       const response = await loginApi(email, password);
-      const { token: receivedToken, user: receivedUser } = response;
+      const receivedToken = response?.access_token;
+      if (!receivedToken) {
+        throw new Error('Login response did not include an access token.');
+      }
 
-      localStorage.setItem(TOKEN_STORAGE_KEY, receivedToken);
-      localStorage.setItem(USER_STORAGE_KEY, JSON.stringify(receivedUser));
-
-      setToken(receivedToken);
-      setUser(receivedUser);
-      return receivedUser;
+      setClientAccessToken(receivedToken);
+      setAccessToken(receivedToken);
+      setUser(response.user || null);
+      return response.user;
     } catch (err) {
       const message = err.message || 'Invalid email or password.';
       setAuthError(message);
@@ -96,8 +110,8 @@ export function AuthProvider({ children }) {
 
   const value = {
     user,
-    token,
-    isAuthenticated: Boolean(token && user),
+    token: accessToken,
+    isAuthenticated: Boolean(accessToken && user),
     isAdmin: user?.role === 'admin',
     isOperator: user?.role === 'operator',
     isLoading,
