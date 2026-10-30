@@ -31,3 +31,12 @@ export async function getProductionReport(from, to) {
 export async function getProfitReport(from, to) {
   return apiClient.get('/reports/profit', { params: { from, to } });
 }
+
+/**
+ * Fetch a server-rendered analytical report as a PDF binary - Admin only.
+ * @param {{ type: 'profit'|'production'|'dashboard', from?: string, to?: string, date?: string }} params
+ * @returns {Promise<import('axios').AxiosResponse<Blob>>}
+ */
+export async function downloadReportPdf(params) {
+  return apiClient.get('/reports/pdf', { params, responseType: 'blob' });
+}

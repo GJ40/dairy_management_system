@@ -98,7 +98,7 @@ export default function Invoices() {
     if (isNaN(amount) || amount <= 0) { toast.error('Enter a valid amount.'); return; }
     setPaymentLoading(true);
     try {
-      await recordPayment(paymentTarget.id, { paid_amount: amount.toFixed(2) });
+      await recordPayment(paymentTarget.id, { amount: amount.toFixed(2) });
       toast.success('Payment recorded!');
       setPaymentTarget(null);
       setPaymentForm({ amount: '' });

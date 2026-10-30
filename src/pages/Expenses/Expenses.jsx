@@ -34,29 +34,38 @@ export default function Expenses() {
   const [formLoading, setFormLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
-  const fetchExpenses = useCallback(async () => {
+  const fetchExpenses = useCallback(() => {
+    // expenses API: { items: [...], page, page_size, total, total_expense_amount }
+    // categories API: { categories: [...] }
+    return Promise.all([getExpenses(), getExpenseCategories()])
+      .then(([expRes, catRes]) => {
+        setExpenses(expRes?.items || []);
+        setError(null);
+        const cats = catRes?.categories || [];
+        setCategories(cats);
+        // Auto-select the first category only while the form has none
+        if (cats.length > 0) {
+          setForm((prev) => (
+            prev.category_id
+              ? prev
+              : { ...prev, category_id: String(cats[0].id) }
+          ));
+        }
+      })
+      .catch((err) => {
+        setError(err.message || 'Failed to load expenses.');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, []);
+
+  // User-triggered refetch: resets the loading/error state outside the effect body.
+  const refreshExpenses = () => {
     setLoading(true);
     setError(null);
-    try {
-      // expenses API: { items: [...], page, page_size, total, total_expense_amount }
-      // categories API: { categories: [...] }
-      const [expRes, catRes] = await Promise.all([
-        getExpenses(),
-        getExpenseCategories(),
-      ]);
-      setExpenses(expRes?.items || []);
-      const cats = catRes?.categories || [];
-      setCategories(cats);
-      // Auto-select first category if form is empty
-      if (cats.length > 0 && !form.category_id) {
-        setForm((prev) => ({ ...prev, category_id: String(cats[0].id) }));
-      }
-    } catch (err) {
-      setError(err.message || 'Failed to load expenses.');
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    fetchExpenses();
+  };
 
   useEffect(() => { fetchExpenses(); }, [fetchExpenses]);
 
@@ -65,12 +74,6 @@ export default function Expenses() {
     if (expense?.category?.name) return capitalize(expense.category.name);
     const cat = categories.find((c) => c.id === expense?.category_id);
     return cat ? capitalize(cat.name) : `Category #${expense?.category_id}`;
-  };
-
-  // For the category filter chips and form
-  const getCategoryNameById = (id) => {
-    const cat = categories.find((c) => c.id === parseInt(id));
-    return cat ? capitalize(cat.name) : `Category #${id}`;
   };
 
   const filtered = expenses.filter((e) => {
@@ -96,7 +99,7 @@ export default function Expenses() {
       toast.success('Expense recorded successfully!');
       setShowForm(false);
       setForm({ ...EMPTY_FORM, expense_date: today, category_id: categories[0] ? String(categories[0].id) : '' });
-      fetchExpenses();
+      refreshExpenses();
     } catch (err) {
       toast.error(err.message || 'Failed to record expense.');
     } finally {
@@ -110,7 +113,7 @@ export default function Expenses() {
       await deleteExpense(deleteTarget.id);
       toast.success('Expense deleted.');
       setDeleteTarget(null);
-      fetchExpenses();
+      refreshExpenses();
     } catch (err) {
       toast.error(err.message || 'Failed to delete expense.');
     }
@@ -191,7 +194,7 @@ export default function Expenses() {
           <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
         </div>
         <button
-          onClick={fetchExpenses}
+          onClick={refreshExpenses}
           className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition"
         >
           <RefreshCw className="w-4 h-4" />
@@ -201,7 +204,7 @@ export default function Expenses() {
       {loading ? (
         <LoadingSpinner message="Loading expenses…" />
       ) : error ? (
-        <ErrorAlert message={error} onRetry={fetchExpenses} />
+        <ErrorAlert message={error} onRetry={refreshExpenses} />
       ) : filtered.length === 0 ? (
         <EmptyState
           icon={Wallet}

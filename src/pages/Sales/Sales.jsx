@@ -38,23 +38,31 @@ export default function Sales() {
   const [formLoading, setFormLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
-  const fetchSales = useCallback(async () => {
+  const fetchSales = useCallback(() => {
+    // Both APIs return { items: [...], ... }
+    return Promise.all([
+      getSales(dateFilter ? { date: dateFilter } : {}),
+      getCustomers(),
+    ])
+      .then(([salesRes, custRes]) => {
+        setSales(salesRes?.items || []);
+        setCustomers(custRes?.items || []);
+        setError(null);
+      })
+      .catch((err) => {
+        setError(err.message || 'Failed to load sales data.');
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  }, [dateFilter]);
+
+  // User-triggered refetch: resets the loading/error state outside the effect body.
+  const refreshSales = () => {
     setLoading(true);
     setError(null);
-    try {
-      // Both APIs return { items: [...], ... }
-      const [salesRes, custRes] = await Promise.all([
-        getSales(dateFilter ? { date: dateFilter } : {}),
-        getCustomers(),
-      ]);
-      setSales(salesRes?.items || []);
-      setCustomers(custRes?.items || []);
-    } catch (err) {
-      setError(err.message || 'Failed to load sales data.');
-    } finally {
-      setLoading(false);
-    }
-  }, [dateFilter]);
+    fetchSales();
+  };
 
   useEffect(() => { fetchSales(); }, [fetchSales]);
 
@@ -87,7 +95,7 @@ export default function Sales() {
       toast.success('Sale recorded successfully!');
       setShowForm(false);
       setForm({ ...EMPTY_FORM, sale_date: today });
-      fetchSales();
+      refreshSales();
     } catch (err) {
       toast.error(err.message || 'Failed to record sale.');
     } finally {
@@ -101,7 +109,7 @@ export default function Sales() {
       await deleteSale(deleteTarget.id);
       toast.success('Sale record deleted.');
       setDeleteTarget(null);
-      fetchSales();
+      refreshSales();
     } catch (err) {
       toast.error(err.message || 'Failed to delete sale.');
     }
@@ -140,7 +148,11 @@ export default function Sales() {
           <input
             type="date"
             value={dateFilter}
-            onChange={(e) => setDateFilter(e.target.value)}
+            onChange={(e) => {
+              setLoading(true);
+              setError(null);
+              setDateFilter(e.target.value);
+            }}
             className="px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-white"
           />
         </div>
@@ -155,7 +167,7 @@ export default function Sales() {
           />
         </div>
         <button
-          onClick={fetchSales}
+          onClick={refreshSales}
           className="inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg transition"
         >
           <RefreshCw className="w-4 h-4" />
@@ -183,7 +195,7 @@ export default function Sales() {
       {loading ? (
         <LoadingSpinner message="Loading sales…" />
       ) : error ? (
-        <ErrorAlert message={error} onRetry={fetchSales} />
+        <ErrorAlert message={error} onRetry={refreshSales} />
       ) : filtered.length === 0 ? (
         <EmptyState
           icon={ShoppingCart}
