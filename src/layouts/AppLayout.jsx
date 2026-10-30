@@ -19,6 +19,9 @@ import {
   X,
   ShieldCheck,
   UserCheck,
+  ClipboardList,
+  MessagesSquare,
+  KeyRound,
 } from 'lucide-react';
 
 export function AppLayout() {
@@ -38,12 +41,15 @@ export function AppLayout() {
     { name: 'Milk Production', path: '/production', icon: Milk },
     { name: 'Stock & Wastage', path: '/stock', icon: Layers },
     { name: 'Customers', path: '/customers', icon: Users },
+    { name: 'Customer Orders', path: '/customer-orders', icon: ClipboardList },
+    { name: 'Support Queries', path: '/customer-queries', icon: MessagesSquare },
     { name: 'Sales', path: '/sales', icon: ShoppingCart },
     { name: 'Invoices', path: '/invoices', icon: ReceiptText },
     { name: 'Reports', path: '/reports', icon: BarChart3 },
   ];
 
   const adminNavItems = [
+    { name: 'Portal Accounts', path: '/portal-accounts', icon: KeyRound },
     { name: 'Expenses', path: '/expenses', icon: Wallet },
     { name: 'User Management', path: '/users', icon: UserCog },
   ];

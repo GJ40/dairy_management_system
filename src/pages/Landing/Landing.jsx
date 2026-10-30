@@ -141,13 +141,21 @@ export function Landing() {
                 <ArrowRight className="w-4 h-4" />
               </Link>
             ) : (
-              <Link
-                to="/login"
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs"
-              >
-                <span>Staff Portal</span>
-                <ExternalLink className="w-3.5 h-3.5 text-emerald-400" />
-              </Link>
+              <>
+                <Link
+                  to="/portal/login"
+                  className="hidden sm:inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-emerald-200 bg-white hover:bg-emerald-50 text-emerald-800 text-xs font-bold transition"
+                >
+                  <span>Customer Portal</span>
+                </Link>
+                <Link
+                  to="/login"
+                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs"
+                >
+                  <span>Staff Portal</span>
+                  <ExternalLink className="w-3.5 h-3.5 text-emerald-400" />
+                </Link>
+              </>
             )}
           </div>
         </div>
@@ -639,13 +647,22 @@ export function Landing() {
               <p className="text-slate-400 text-xs mb-3">
                 Authorized farm operators and managers access the internal live inventory and production grid:
               </p>
-              <Link
-                to="/login"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition"
-              >
-                <span>Staff Portal Sign In</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
+              <div className="flex flex-wrap gap-2">
+                <Link
+                  to="/login"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition"
+                >
+                  <span>Staff Portal Sign In</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+                <Link
+                  to="/portal/login"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-700 text-emerald-300 hover:bg-emerald-900 font-semibold transition"
+                >
+                  <span>Customer Portal</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </Link>
+              </div>
             </div>
           </div>
 

@@ -9,6 +9,10 @@ import {
   getCustomerBalance,
 } from '../../api/customers';
 import { getSales } from '../../api/sales';
+import { getInvoices } from '../../api/invoices';
+import { getCustomerOrders } from '../../api/customerOrders';
+import { getCustomerQueries } from '../../api/customerQueries';
+import { getPortalAccounts } from '../../api/portalAccounts';
 import { formatCurrency, formatDate, formatLitres } from '../../utils/formatters';
 import PageHeader from '../../components/PageHeader';
 import ConfirmModal from '../../components/ConfirmModal';
@@ -33,6 +37,9 @@ import {
   Wallet,
   ReceiptText,
   AlertCircle,
+  KeyRound,
+  ClipboardList,
+  MessagesSquare,
 } from 'lucide-react';
 
 const FETCH_PAGE_SIZE = 100;
@@ -290,13 +297,31 @@ export default function Customers() {
     setDetailError(null);
 
     try {
-      const [balance, salesResponse] = await Promise.all([
+      const [
+        balance,
+        salesResponse,
+        invoicesResponse,
+        ordersResponse,
+        queriesResponse,
+        accountsResponse,
+      ] = await Promise.all([
         getCustomerBalance(customer.id),
         getSales({ customer_id: customer.id, page_size: 10 }),
+        getInvoices({ customer_id: customer.id, page_size: 5 }),
+        getCustomerOrders({ customer_id: customer.id, page_size: 5 }),
+        getCustomerQueries({ customer_id: customer.id, page_size: 5 }),
+        getPortalAccounts({ customer_id: customer.id, page_size: 1 }),
       ]);
 
       if (sequence !== detailRequestSequence.current) return;
-      setDetailData({ balance, sales: salesResponse?.items || [] });
+      setDetailData({
+        balance,
+        sales: salesResponse?.items || [],
+        invoices: invoicesResponse?.items || [],
+        orders: ordersResponse?.items || [],
+        queries: queriesResponse?.items || [],
+        account: accountsResponse?.items?.[0] || null,
+      });
     } catch (err) {
       if (sequence !== detailRequestSequence.current) return;
       setDetailData(null);
@@ -741,6 +766,37 @@ export default function Customers() {
                 </span>
               </div>
 
+              {detailData && (
+                <div className="mb-5 flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs">
+                  <KeyRound className="h-4 w-4 text-slate-400" />
+                  <span className="font-semibold text-slate-700">Portal access</span>
+                  {detailData.account ? (
+                    <>
+                      <span className="text-slate-600">{detailData.account.email}</span>
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 font-semibold ${
+                          !detailData.account.is_active
+                            ? 'bg-slate-200 text-slate-600'
+                            : detailData.account.activated_at
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : 'bg-amber-100 text-amber-800'
+                        }`}
+                      >
+                        {!detailData.account.is_active
+                          ? 'Deactivated'
+                          : detailData.account.activated_at
+                            ? 'Active'
+                            : 'Pending activation'}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="text-slate-500">
+                      No portal account provisioned yet.
+                    </span>
+                  )}
+                </div>
+              )}
+
               {detailLoading ? (
                 <LoadingSpinner message="Loading balance and sales..." />
               ) : detailError ? (
@@ -846,6 +902,94 @@ export default function Customers() {
                       </table>
                     </div>
                   )}
+
+                  <div className="mt-6">
+                    <div className="mb-3 flex items-center gap-2">
+                      <ClipboardList className="h-4 w-4 text-slate-400" />
+                      <h3 className="text-sm font-bold text-slate-800">Recent portal orders</h3>
+                    </div>
+                    {detailData.orders.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-500">
+                        No portal orders yet.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+                        {detailData.orders.map((order) => (
+                          <div key={order.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-sm">
+                            <div>
+                              <span className="font-mono text-xs font-semibold text-emerald-700">
+                                {order.order_no}
+                              </span>
+                              <span className="ml-2 text-slate-600">
+                                {formatLitres(order.quantity_litres)} · {formatDate(order.requested_date)}
+                              </span>
+                            </div>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold capitalize text-slate-600">
+                              {order.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="mb-3 flex items-center gap-2">
+                      <ReceiptText className="h-4 w-4 text-slate-400" />
+                      <h3 className="text-sm font-bold text-slate-800">Recent invoices</h3>
+                    </div>
+                    {detailData.invoices.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-500">
+                        No invoices yet.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+                        {detailData.invoices.map((invoice) => (
+                          <div key={invoice.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-sm">
+                            <div>
+                              <span className="font-mono text-xs font-semibold text-slate-700">
+                                {invoice.invoice_no}
+                              </span>
+                              <span className="ml-2 text-slate-600">
+                                {formatCurrency(invoice.total_amount)}
+                              </span>
+                            </div>
+                            <span className="text-xs font-semibold text-rose-700">
+                              Balance {formatCurrency(invoice.balance)}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="mt-6">
+                    <div className="mb-3 flex items-center gap-2">
+                      <MessagesSquare className="h-4 w-4 text-slate-400" />
+                      <h3 className="text-sm font-bold text-slate-800">Support queries</h3>
+                    </div>
+                    {detailData.queries.length === 0 ? (
+                      <div className="rounded-xl border border-dashed border-slate-300 p-4 text-center text-sm text-slate-500">
+                        No support queries yet.
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-100 rounded-xl border border-slate-200">
+                        {detailData.queries.map((query) => (
+                          <div key={query.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2.5 text-sm">
+                            <div className="min-w-0">
+                              <span className="font-mono text-xs font-semibold text-emerald-700">
+                                {query.query_no}
+                              </span>
+                              <span className="ml-2 truncate text-slate-600">{query.subject}</span>
+                            </div>
+                            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold capitalize text-slate-600">
+                              {query.status.replace('_', ' ')}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </>
               ) : null}
             </div>
