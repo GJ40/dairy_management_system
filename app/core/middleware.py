@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from urllib.parse import parse_qsl, urlencode
 
 from fastapi import status
 from starlette.datastructures import Headers, MutableHeaders
@@ -22,6 +23,38 @@ SECURITY_HEADERS = {
     "origin-agent-cluster": "?1",
     "x-xss-protection": "0",
 }
+
+# Query parameters that carry credentials. Reset/activation links put a live
+# token in the URL, so logging the raw query string would write it to the log
+# file for the whole lifetime of the link.
+SENSITIVE_QUERY_MARKERS = (
+    "token",
+    "secret",
+    "password",
+    "api_key",
+    "apikey",
+)
+REDACTED = "REDACTED"
+
+
+def _redact_query_string(query: str) -> str:
+    """Rebuild a query string with credential-like values masked."""
+    if not query:
+        return ""
+    pairs = parse_qsl(query, keep_blank_values=True)
+    if not pairs:
+        return ""
+    return urlencode(
+        [
+            (
+                key,
+                REDACTED
+                if any(marker in key.lower() for marker in SENSITIVE_QUERY_MARKERS)
+                else value,
+            )
+            for key, value in pairs
+        ]
+    )
 
 
 class BodySizeLimitMiddleware:
@@ -46,7 +79,7 @@ class BodySizeLimitMiddleware:
                     status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                     content={
                         "error": {
-                            "code": "INTERNAL_ERROR",
+                            "code": "PAYLOAD_TOO_LARGE",
                             "message": "request entity too large",
                         }
                     },
@@ -106,7 +139,9 @@ class RequestLoggingMiddleware:
             raise
         finally:
             path = scope.get("path", "")
-            query = scope.get("query_string", b"").decode("latin-1")
+            query = _redact_query_string(
+                scope.get("query_string", b"").decode("latin-1")
+            )
             if query:
                 path = f"{path}?{query}"
             duration_ms = (time.perf_counter() - started) * 1000

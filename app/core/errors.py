@@ -38,8 +38,9 @@ def _status_code_to_error_code(status_code: int) -> str:
         status.HTTP_403_FORBIDDEN: "FORBIDDEN",
         status.HTTP_404_NOT_FOUND: "NOT_FOUND",
         status.HTTP_409_CONFLICT: "DUPLICATE_ENTRY",
-        status.HTTP_413_CONTENT_TOO_LARGE: "INTERNAL_ERROR",
+        status.HTTP_413_CONTENT_TOO_LARGE: "PAYLOAD_TOO_LARGE",
         status.HTTP_422_UNPROCESSABLE_CONTENT: "VALIDATION_ERROR",
+        status.HTTP_429_TOO_MANY_REQUESTS: "RATE_LIMITED",
         status.HTTP_500_INTERNAL_SERVER_ERROR: "INTERNAL_ERROR",
     }.get(status_code, "INTERNAL_ERROR")
 

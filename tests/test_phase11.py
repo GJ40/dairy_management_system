@@ -331,6 +331,9 @@ class FakeDataSeedTests(unittest.IsolatedAsyncioTestCase):
             "MilkWastage",
             "Invoice",
             "InvoiceSale",
+            "CustomerPortalAccount",
+            "CustomerOrder",
+            "CustomerQuery",
         )
         for model_name in stable:
             self.assertEqual(

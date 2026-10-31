@@ -12,6 +12,12 @@ from app.models import Buffalo, ExpenseCategory, User
 
 EXPECTED_TABLES = {
     "buffaloes",
+    "customer_order_events",
+    "customer_orders",
+    "customer_portal_account_events",
+    "customer_portal_accounts",
+    "customer_queries",
+    "customer_query_messages",
     "customers",
     "expense_categories",
     "expenses",
@@ -19,8 +25,29 @@ EXPECTED_TABLES = {
     "invoices",
     "milk_production",
     "milk_wastage",
+    "password_reset_tokens",
     "sales",
     "users",
+}
+
+EXPECTED_SET_NULL_FKS = {
+    "fk_customer_order_events_actor_account_id",
+    "fk_customer_order_events_actor_user_id",
+    "fk_customer_orders_reviewed_by",
+    "fk_customer_portal_account_events_actor_user_id",
+    "fk_customer_queries_assigned_to",
+    "fk_customer_query_messages_sender_account_id",
+    "fk_customer_query_messages_sender_user_id",
+    "fk_sales_source_order_id",
+}
+
+NO_UPDATED_AT_TABLES = {
+    "customer_order_events",
+    "customer_portal_account_events",
+    "customer_query_messages",
+    # Token rows are written once and only ever flipped to used; like the
+    # event tables above they are append-only and carry no updated_at.
+    "password_reset_tokens",
 }
 
 
@@ -51,16 +78,45 @@ class ModelSchemaTests(unittest.TestCase):
             },
         )
 
-    def test_all_foreign_keys_cascade(self) -> None:
-        foreign_keys = [
-            fk
+    def test_foreign_key_policies(self) -> None:
+        foreign_keys = {
+            fk.name: fk
             for table in Base.metadata.tables.values()
             for fk in table.foreign_keys
-        ]
-        self.assertEqual(len(foreign_keys), 10)
-        for fk in foreign_keys:
-            self.assertEqual(fk.ondelete, "CASCADE", fk.name)
-            self.assertEqual(fk.onupdate, "CASCADE", fk.name)
+        }
+        self.assertEqual(len(foreign_keys), 26)
+        for name, fk in foreign_keys.items():
+            self.assertEqual(fk.onupdate, "CASCADE", name)
+            expected = "SET NULL" if name in EXPECTED_SET_NULL_FKS else "CASCADE"
+            self.assertEqual(fk.ondelete, expected, name)
+
+    def test_portal_unique_constraints(self) -> None:
+        account_indexes = {
+            index.name: index
+            for index in Base.metadata.tables["customer_portal_accounts"].indexes
+        }
+        self.assertTrue(account_indexes["customer_portal_accounts_customer_id"].unique)
+        self.assertTrue(account_indexes["customer_portal_accounts_email"].unique)
+
+        sales_indexes = {
+            index.name: index for index in Base.metadata.tables["sales"].indexes
+        }
+        self.assertTrue(sales_indexes["sales_source_order_id"].unique)
+
+    def test_order_decimal_precision(self) -> None:
+        orders = Base.metadata.tables["customer_orders"].c
+        self.assertEqual(
+            (orders.quantity_litres.type.precision, orders.quantity_litres.type.scale),
+            (10, 2),
+        )
+        self.assertEqual(
+            (orders.rate_snapshot.type.precision, orders.rate_snapshot.type.scale),
+            (10, 2),
+        )
+        self.assertEqual(
+            (orders.estimated_total.type.precision, orders.estimated_total.type.scale),
+            (12, 2),
+        )
 
     def test_decimal_precision(self) -> None:
         litres = Base.metadata.tables["milk_production"].c.litres.type
@@ -71,8 +127,11 @@ class ModelSchemaTests(unittest.TestCase):
         self.assertEqual((amount.precision, amount.scale), (12, 2))
 
     def test_timestamps_configured(self) -> None:
-        for table in Base.metadata.tables.values():
+        for name, table in Base.metadata.tables.items():
             self.assertIsNotNone(table.c.created_at.default)
+            if name in NO_UPDATED_AT_TABLES:
+                self.assertNotIn("updated_at", table.c)
+                continue
             self.assertIsNotNone(table.c.updated_at.default)
             self.assertIsNotNone(table.c.updated_at.onupdate)
 

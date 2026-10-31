@@ -130,7 +130,7 @@ class Phase1ApiTests(unittest.IsolatedAsyncioTestCase):
             response.json(),
             {
                 "error": {
-                    "code": "INTERNAL_ERROR",
+                    "code": "PAYLOAD_TOO_LARGE",
                     "message": "request entity too large",
                 }
             },

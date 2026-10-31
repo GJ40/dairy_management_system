@@ -86,6 +86,7 @@ class AuthService:
                 "UNAUTHORIZED",
                 "User account is deactivated",
             )
+        self._assert_session_current(payload, user)
 
         return {
             # Named explicitly: the refresh token is not in this body, it lives
@@ -95,6 +96,24 @@ class AuthService:
             "expires_in": settings.access_token_expire_minutes * 60,
             "user": serialize_user(user),
         }
+
+    @staticmethod
+    def _assert_session_current(payload: dict[str, Any], user: User) -> None:
+        """Reject tokens issued before the last password change/deactivation.
+
+        Tokens carry the `token_version` they were signed with; a reset bumps
+        the column, which invalidates every refresh token issued earlier.
+        """
+        try:
+            issued_version = int(payload.get("ver", 0))
+        except (TypeError, ValueError):
+            issued_version = -1
+        if issued_version != (user.token_version or 0):
+            raise api_error(
+                status.HTTP_401_UNAUTHORIZED,
+                "UNAUTHORIZED",
+                "Session has expired; sign in again",
+            )
 
     @staticmethod
     def _invalid_refresh_message(token: str) -> str:
@@ -125,6 +144,7 @@ class AuthService:
                 email=user.email,
                 username=user.username,
                 role=user.role,
+                token_version=user.token_version or 0,
             ),
             "token_type": "bearer",
             "expires_in": settings.access_token_expire_minutes * 60,
@@ -138,6 +158,7 @@ class AuthService:
             email=user.email,
             username=user.username,
             role=user.role,
+            token_version=user.token_version or 0,
         )
 
     async def get_me(self, user_id: int) -> dict[str, Any]:

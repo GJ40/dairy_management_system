@@ -1,6 +1,6 @@
 # Handoff — FastAPI backend (`backend_py`)
 
-**Status:** Phases 0–12 complete. 210 tests + 94 subtests pass; `ruff` clean; `compileall` clean.
+**Status:** Phases 0–15 complete. 378 tests + 150 subtests pass; `ruff` clean; `compileall` clean.
 **Reference implementation:** `backend/` (Node.js + Express 5 + Sequelize + MySQL) — unchanged.
 
 ---
@@ -39,6 +39,12 @@ deleting the cookie ends the session even while the access token is valid. `POST
 /api/v1/auth/refresh` trades the cookie for a new access token and `POST /api/v1/auth/logout`
 clears it.
 
+Password reset: `POST /auth/forgot-password` always returns the same message, emails a
+single-use link from a background task, and `POST /auth/reset-password` (plus
+`GET /auth/reset-password/validate`) sets the new password. A successful reset bumps
+`token_version`, which invalidates every access and refresh token issued earlier; the same
+applies to the customer endpoints under `/customer-auth` and to portal deactivate/reactivate.
+
 ## 2. Verify
 
 ```powershell
@@ -58,13 +64,19 @@ The fake seeder commits once at the end and rolls back on error. Re-running dupl
 expenses only (their natural keys contain random amounts — same as Node). It works with both modern
 and legacy Faker APIs.
 
+It also seeds customer portal demo data: two pre-activated accounts (`portal1@dairydemo.in`,
+`portal2@dairydemo.in`, password `Customer@123`), three orders (submitted / approved / fulfilled)
+and two support queries (one open, one answered). One invoice is seeded for the first active
+customer in `partial` status — generate more from the Invoices page, which groups all un-invoiced
+sales per customer.
+
 ## 4. What is implemented
 
 | Area | Endpoints | Roles |
 | --- | --- | --- |
 | Health/docs | `/health`, `/api/v1/health`, `/docs`, `/api/v1/docs` | public |
-| Auth | `POST /auth/login`, `GET /auth/me` | public / any |
-| Users | `GET/POST /users`, `GET/PUT /users/:id`, `PATCH /users/:id/status` | admin |
+| Auth | `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `POST /auth/forgot-password`, `GET /auth/reset-password/validate`, `POST /auth/reset-password`, `GET /auth/me` | public / any |
+| Users | `GET/POST /users`, `GET/PUT /users/:id`, `PATCH /users/:id/status`, `DELETE /users/:id` | admin |
 | Buffaloes | `GET /buffaloes/count`, `GET/POST /buffaloes`, `GET/PUT /buffaloes/:id` | admin + operator |
 | Production | `GET /production/grid`, `/production/summary`, `/production/buffalo/:id`, `GET/POST /production` (single + bulk) | admin + operator |
 | Stock | `GET /stock`, `GET /stock/history` | admin + operator |
@@ -73,8 +85,13 @@ and legacy Faker APIs.
 | Sales | `GET/POST /sales`, `GET/PUT /sales/:id` | admin + operator |
 | Invoices | `GET/POST /invoices`, `GET /invoices/:id`, `GET /invoices/:id/pdf`, `PATCH /invoices/:id/payment` | admin + operator |
 | Expenses | `GET/POST /expenses/categories`, `GET /expense-categories`, `GET/POST /expenses`, `GET/PUT /expenses/:id` | admin |
-| Reports | `GET /reports/profit` (admin), `GET /reports/production`, `GET /reports/dashboard` | admin / admin + operator |
+| Reports | `GET /reports/profit` (admin), `GET /reports/production`, `GET /reports/dashboard`, `GET /reports/pdf` | admin / admin + operator |
 | Soft delete | `DELETE /:resource/:id` for `buffaloes,customers,sales,invoices,expenses,production,wastage` | admin |
+| Portal accounts | `GET /customer-portal-accounts`, `GET /{id}`, `POST`, `POST /{id}/reactivate`, `POST /{id}/deactivate`, `POST /{id}/reset-activation` | read: admin + operator; writes: admin |
+| Portal staff orders | `GET /customer-orders`, `GET /{id}`, `POST /{id}/approve`, `POST /{id}/reject`, `POST /{id}/fulfil`, `POST /{id}/cancel` | admin + operator |
+| Portal staff queries | `GET /customer-queries`, `GET /{id}`, `POST /{id}/messages`, `POST /{id}/status`, `POST /{id}/assign` (admin only) | admin + operator |
+| Customer auth | `POST /customer-auth/activate`, `/login`, `/refresh`, `/logout`, `/forgot-password`, `GET /customer-auth/reset-password/validate`, `POST /customer-auth/reset-password`, `GET /customer-auth/me` | public / customer |
+| Customer portal | `GET /customer-portal/dashboard`, `/profile`, `/balance`, `GET/POST /orders`, `GET /orders/{id}`, `POST /orders/{id}/cancel`, `GET /invoices`, `GET /invoices/{id}`, `GET /invoices/{id}/pdf`, `GET/POST /queries`, `GET /queries/{id}`, `POST /queries/{id}/messages` | customer only |
 
 Response envelopes are intentionally not uniform — each route mirrors Node (`/sales` POST returns flat
 fields, `/expenses` list adds `total_pages`, `/auth/me` uses snake_case timestamps, etc.).
@@ -95,10 +112,12 @@ See `API_PARITY.md` for the per-route contract and `SCHEMA_MAPPING.md` for the d
 2. Soft-deleted unique rows: restore/overwrite on re-entry, or keep returning conflicts.
 3. Payments: keep Node's overpayment behaviour, or enforce ADR-004.
 4. Operator rights: Node allows sale/invoice edits; PRD §4 suggests create/view/print only.
-5. Scope: password reset, customer sales history, CSV/PDF report exports are absent in Node.
+5. Scope: customer sales history and CSV report exports are absent in Node; password reset has since
+   been implemented in Python only. Live side-by-side parity remains for those additions.
 
 ## 7. Not done
 
 - No live write-path parity run (Node suite mutates the live DB; it was not executed).
-- Phases 9–11 and the report endpoints have unit/API coverage but no live side-by-side Node comparison.
-- No CI configuration, Docker image, or frontend changes; `backend/` and `frontend/` are untouched.
+- Phases 9–15 and the report endpoints have unit/API coverage but no live side-by-side Node comparison.
+- No CI configuration or Docker image. The staff and portal reset pages live in `frontend/` and its
+  lint/build are the only frontend checks; `backend/` (Node) is untouched.

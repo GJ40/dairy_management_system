@@ -4,8 +4,10 @@ from typing import Any
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     HTTPException,
+    Query,
     Request,
     Response,
     status,
@@ -13,11 +15,18 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 
 from app.core.config import settings
-from app.core.dependencies import get_auth_service, get_current_user
+from app.core.dependencies import (
+    get_auth_service,
+    get_current_user,
+    get_password_reset_service,
+)
 from app.core.errors import api_error
+from app.models.password_reset_token import RESET_SCOPE_STAFF
 from app.models.user import User
+from app.schemas.password_reset import ForgotPasswordRequest, ResetPasswordRequest
 from app.schemas.user import LoginRequest
 from app.services.auth_service import AuthService
+from app.services.password_reset_service import PasswordResetService
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -149,6 +158,62 @@ async def refresh(
 async def logout(response: Response) -> dict[str, str]:
     _clear_session_cookies(response)
     return {"message": "Logged out"}
+
+
+@router.post(
+    "/forgot-password",
+    summary="Request a password reset link",
+    description=(
+        "Always returns the same message so the endpoint cannot be used to "
+        "discover which staff emails exist. A single-use link is emailed when "
+        "the account exists and is active."
+    ),
+)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    background: BackgroundTasks,
+    service: PasswordResetService = Depends(get_password_reset_service),
+) -> dict[str, str]:
+    return await service.request_staff_reset(
+        payload.email, background=background
+    )
+
+
+@router.get(
+    "/reset-password/validate",
+    summary="Check a password reset link",
+    description=(
+        "Called by the reset page before it renders the form. Returns 400 with "
+        "`INVALID_RESET_TOKEN`, `RESET_TOKEN_USED` or `RESET_TOKEN_EXPIRED` "
+        "when the link cannot be used."
+    ),
+)
+async def validate_reset_password(
+    token: str = Query(default="", max_length=200),
+    service: PasswordResetService = Depends(get_password_reset_service),
+) -> dict[str, bool]:
+    return await service.validate(RESET_SCOPE_STAFF, token)
+
+
+@router.post(
+    "/reset-password",
+    summary="Set a new password from a reset link",
+    description=(
+        "Consumes the one-time token and stores the new password. The token is "
+        "marked used atomically, so a replay returns `RESET_TOKEN_USED`."
+    ),
+)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    background: BackgroundTasks,
+    service: PasswordResetService = Depends(get_password_reset_service),
+) -> dict[str, str]:
+    return await service.reset_password(
+        RESET_SCOPE_STAFF,
+        payload.token,
+        payload.password,
+        background=background,
+    )
 
 
 @router.get("/me")

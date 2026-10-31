@@ -38,6 +38,14 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
         default=True,
         server_default=text("1"),
     )
+    # Bumped whenever existing sessions must stop working (password reset,
+    # deactivation). Tokens carry the value they were issued with.
+    token_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
 
     production_records: Mapped[list["MilkProduction"]] = relationship(
         back_populates="recorder"

@@ -1,7 +1,7 @@
 # Progress — Python/FastAPI Migration
 
-**Current phase:** Phase 12 complete — parity audit + handoff
-**Last updated:** 2026-10-29
+**Current phase:** Phase 15 complete — session revocation + background email
+**Last updated:** 2026-10-31
 **Target:** `backend_py/` only
 **Reference:** `backend/` (do not modify)
 
@@ -24,7 +24,9 @@
 | 10 | Dashboard + reports | **COMPLETE** |
 | 11 | Faker seeders | **COMPLETE** (live fake-seed run pending) |
 | 12 | Parity audit + handoff | **COMPLETE** |
-| 13 | Feature fixes: operator deletion, report PDFs, invoice PDF | **IMPLEMENTED — tests not yet run** |
+| 13 | Feature fixes: operator deletion, report PDFs, invoice PDF | **COMPLETE** |
+| 14 | Security hardening + password reset | **COMPLETE** |
+| 15 | Session revocation + background email | **COMPLETE** |
 
 Phase 1 is complete: configuration, async DB session, error handlers, middleware, health, docs,
 `.env.example`, and stdlib tests are implemented. Phase 2 is complete: all 10 models match the live
@@ -715,24 +717,70 @@ Created/changed:
 Python-only additions (Node has neither): `DELETE /users/:id`, `GET /reports/pdf`. Documented in
 `API_PARITY.md`. No schema, dependency or lockfile change.
 
-Verification: **NOT RUN.** The agent's command runner cannot start in this environment
-("Bash is required but was not found on this Windows system"), so `pytest`, `ruff` and
-`compileall` still need to be executed by hand:
+Verification: **357 passed**, 150 subtests, `ruff` clean (2026-10-30 full-suite run by the user).
+
+## Phase 14 — security hardening and password reset
+
+Changed:
+
+- `app/core/middleware.py` — request logging redacts the values of `token`, `secret`,
+  `password`, `api_key`/`apikey` query parameters; the 413 body-limit response uses the project
+  envelope with `PAYLOAD_TOO_LARGE`.
+- `app/core/errors.py` — 413 maps to `PAYLOAD_TOO_LARGE`, 429 to `RATE_LIMITED`.
+- `app/core/config.py` — production-only guard rejects the shipped `JWT_SECRET`/admin password,
+  short secrets, and a missing or identical `CUSTOMER_JWT_SECRET`; SMTP settings, `FRONTEND_URL`
+  and the portal cookie names added.
+- `app/main.py` — the wildcard CORS regex is limited to `NODE_ENV=development`; other environments
+  use `CORS_ORIGINS` only.
+- `app/models/password_reset_token.py`, `app/repositories/password_reset_repository.py`,
+  `app/services/password_reset_service.py`, `app/services/email_service.py`,
+  `app/schemas/password_reset.py` (all new) — single-use staff and customer reset links, SHA-256
+  at rest, scope binding, expiry, generic response, confirmation email.
+- `app/routers/auth.py`, `app/routers/customer_auth.py` — `POST /forgot-password`,
+  `GET /reset-password/validate`, `POST /reset-password` for both audiences.
+- `alembic/versions/0003_password_reset.py` — `password_reset_tokens` table.
+- `frontend/src/pages/ResetPassword/`, `frontend/src/pages/customer/Customer{Reset,Forgot}Password.jsx`,
+  `frontend/src/components/PasswordResetForms.jsx` (new) — forgot/reset pages for staff and portal,
+  linked from the login pages.
+- `.env.example` — SMTP, `FRONTEND_URL` and reset-related comments.
+- `tests/test_password_reset.py` (new, 15 tests) and `tests/test_phase1.py` (413/CORS).
+
+## Phase 15 — session revocation and background email
+
+Changed:
+
+- `app/models/user.py`, `app/models/customer_portal_account.py` — `token_version` (int, default 0).
+- `alembic/versions/0004_token_version.py` — adds the column to both tables; applied to the live
+  DB on 2026-10-31 (`alembic current` → `0004_token_version`).
+- `app/core/security.py` — `ver` claim in staff and customer access/refresh tokens.
+- `app/services/auth_service.py`, `app/services/customer_portal_auth_service.py` — login signs the
+  current version; refresh rejects a mismatch with `401` "Session has expired; sign in again".
+- `app/core/dependencies.py` — the bearer guards enforce the same check, so an access token minted
+  before a reset stops working immediately.
+- `app/services/password_reset_service.py` — reset bumps `token_version` in the same commit as the
+  password and hash consume; portal deactivate/reactivate also bump it.
+- `app/utils/tasks.py` (new) — `deliver_or_queue`; routers now pass `BackgroundTasks` so reset and
+  activation emails are sent after the response instead of inside it.
+- `tests/test_auth_refresh.py` (access/refresh revocation), `tests/test_customer_portal_auth.py`
+  (customer refresh revocation), `tests/test_password_reset.py` (deferred email + version bump).
+
+Verification (2026-10-31, observed):
 
 ```powershell
-cd backend_py
-uv run pytest -q
-uv run ruff check app tests
-uv run python -m compileall -q app tests
+uv run ruff check app tests      # All checks passed
+uv run alembic upgrade head      # 0003_password_reset -> 0004_token_version
+uv run pytest -q                 # 378 passed, 150 subtests
 ```
 
 ## Next step
 
-1. **Run the Phase 13 verification commands above** and record the real test count/ruff result.
+1. Manual UAT and the clean-install/upgrade rehearsal described in
+   `../docs/CUSTOMER_PORTAL_UAT_RELEASE.md` §4 (still N/R).
 2. Optional: run the fake seeder against MySQL (`uv run python -m app.seeders.fake_indian_data`) to
    populate demo data; it writes rows and needs approval.
 3. Optional: live side-by-side comparison of the Phase 9–11 endpoints and reports against Node.
-4. Outstanding product decisions are listed in `HANDOFF.md` §6; the frontend invoice-creation gap
-   (missing `period_start`/`period_end`) is recorded in `../docs/FEATURE_FIX_PROGRESS.md`.
+4. Outstanding product decisions are listed in `HANDOFF.md` §6; deliberately not implemented:
+   rate limiting and refresh-token rotation with server-side session records.
 
-No further live DDL, migration, or seed will run without separate approval.
+Migrations `0002`–`0004` are now applied to the development database; any further live DDL, a
+production migration, or a live seed still needs separate approval.

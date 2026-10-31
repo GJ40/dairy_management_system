@@ -16,6 +16,7 @@ class Sale(TimestampMixin, SoftDeleteMixin, Base):
         Index("recorded_by", "recorded_by"),
         Index("sales_sale_date", "sale_date"),
         Index("sales_customer_id_sale_date", "customer_id", "sale_date"),
+        Index("sales_source_order_id", "source_order_id", unique=True),
         {
             "mysql_engine": "InnoDB",
             "mysql_charset": "utf8mb4",
@@ -53,6 +54,16 @@ class Sale(TimestampMixin, SoftDeleteMixin, Base):
             onupdate="CASCADE",
         ),
         nullable=False,
+    )
+    source_order_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey(
+            "customer_orders.id",
+            name="fk_sales_source_order_id",
+            ondelete="SET NULL",
+            onupdate="CASCADE",
+        ),
+        nullable=True,
     )
 
     customer: Mapped["Customer"] = relationship(back_populates="sales")
