@@ -3,7 +3,7 @@ import { toast } from 'react-toastify';
 import { useAuth } from '../../hooks/useAuth';
 import { getInvoices, createInvoice, recordPayment, downloadInvoicePdf, deleteInvoice } from '../../api/invoices';
 import { getCustomers } from '../../api/customers';
-import { formatDate, formatCurrency } from '../../utils/formatters';
+import { formatDate, formatCurrency, getTodayKolkataDate } from '../../utils/formatters';
 import PageHeader from '../../components/PageHeader';
 import ConfirmModal from '../../components/ConfirmModal';
 import EmptyState from '../../components/EmptyState';
@@ -13,6 +13,15 @@ import {
   ReceiptText, Plus, Trash2, Search, X, Download,
   CreditCard, CheckCircle2, Clock, AlertCircle, RefreshCw,
 } from 'lucide-react';
+
+const today = getTodayKolkataDate();
+const monthStart = `${today.slice(0, 8)}01`;
+
+const EMPTY_CREATE_FORM = {
+  customer_id: '',
+  period_start: monthStart,
+  period_end: today,
+};
 
 const STATUS_CONFIG = {
   unpaid:  { label: 'Unpaid',  color: 'bg-rose-100 text-rose-700',    icon: Clock },
@@ -30,7 +39,7 @@ export default function Invoices() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [createForm, setCreateForm] = useState({ customer_id: '' });
+  const [createForm, setCreateForm] = useState({ ...EMPTY_CREATE_FORM });
   const [createLoading, setCreateLoading] = useState(false);
   const [paymentTarget, setPaymentTarget] = useState(null);
   const [paymentForm, setPaymentForm] = useState({ amount: '' });
@@ -78,12 +87,18 @@ export default function Invoices() {
   const handleCreate = async (e) => {
     e.preventDefault();
     if (!createForm.customer_id) { toast.error('Select a customer.'); return; }
+    if (!createForm.period_start || !createForm.period_end) { toast.error('Select the billing period.'); return; }
+    if (createForm.period_start > createForm.period_end) { toast.error('Period start must be on or before period end.'); return; }
     setCreateLoading(true);
     try {
-      await createInvoice({ customer_id: parseInt(createForm.customer_id) });
+      await createInvoice({
+        customer_id: parseInt(createForm.customer_id),
+        period_start: createForm.period_start,
+        period_end: createForm.period_end,
+      });
       toast.success('Invoice generated successfully!');
       setShowCreateForm(false);
-      setCreateForm({ customer_id: '' });
+      setCreateForm({ ...EMPTY_CREATE_FORM });
       refreshData();
     } catch (err) {
       toast.error(err.message || 'Failed to generate invoice. Ensure the customer has un-invoiced sales.');
@@ -156,7 +171,7 @@ export default function Invoices() {
             <RefreshCw className="w-4 h-4" />
           </button>
           <button
-            onClick={() => setShowCreateForm(true)}
+            onClick={() => { setCreateForm({ ...EMPTY_CREATE_FORM }); setShowCreateForm(true); }}
             className="inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold shadow-sm transition"
           >
             <Plus className="w-4 h-4" /> Generate Invoice
@@ -306,7 +321,7 @@ export default function Invoices() {
                 <select
                   required
                   value={createForm.customer_id}
-                  onChange={(e) => setCreateForm({ customer_id: e.target.value })}
+                  onChange={(e) => setCreateForm({ ...createForm, customer_id: e.target.value })}
                   className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-white"
                 >
                   <option value="">Select a customer…</option>
@@ -315,8 +330,32 @@ export default function Invoices() {
                   ))}
                 </select>
               </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Period Start <span className="text-rose-500">*</span></label>
+                  <input
+                    required
+                    type="date"
+                    value={createForm.period_start}
+                    max={createForm.period_end || today}
+                    onChange={(e) => setCreateForm({ ...createForm, period_start: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Period End <span className="text-rose-500">*</span></label>
+                  <input
+                    required
+                    type="date"
+                    value={createForm.period_end}
+                    max={today}
+                    onChange={(e) => setCreateForm({ ...createForm, period_end: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+              </div>
               <p className="text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
-                This will group all un-invoiced sales for the selected customer into one invoice.
+                This will group every sale for the selected customer in this period into one invoice. Sales that are already invoiced are rejected.
               </p>
               <div className="flex justify-end gap-3 pt-2">
                 <button type="button" onClick={() => setShowCreateForm(false)} className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition">
