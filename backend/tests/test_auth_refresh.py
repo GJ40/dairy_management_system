@@ -203,6 +203,55 @@ class AuthRefreshTests(unittest.IsolatedAsyncioTestCase):
             "User account not found",
         )
 
+    async def test_refresh_rejects_a_token_issued_before_a_password_reset(
+        self,
+    ) -> None:
+        token = create_refresh_token(
+            user_id=self.admin.id,
+            email=self.admin.email,
+            username=self.admin.username,
+            role=self.admin.role,
+            token_version=0,
+        )
+        # A reset bumps the column; the old cookie must stop working.
+        self.admin.token_version = 1
+
+        response = await self._refresh(headers=self._cookie_header(token))
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json()["error"]["message"],
+            "Session has expired; sign in again",
+        )
+        self._assert_expired(response, COOKIE)
+
+    async def test_access_token_from_before_a_password_reset_is_rejected(
+        self,
+    ) -> None:
+        access = create_access_token(
+            user_id=self.admin.id,
+            email=self.admin.email,
+            username=self.admin.username,
+            role=self.admin.role,
+            token_version=0,
+        )
+        refresh = self._refresh_token()
+        self.admin.token_version = 1
+
+        response = await self.client.get(
+            "/api/v1/auth/me",
+            headers={
+                "Authorization": f"Bearer {access}",
+                **self._cookie_header(refresh),
+            },
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json()["error"]["message"],
+            "Session has expired; sign in again",
+        )
+
     async def test_login_sets_refresh_and_hint_cookies(self) -> None:
         response = await self.client.post(
             "/api/v1/auth/login",

@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    Field,
+    SecretStr,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import URL, make_url
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 DEFAULT_JWT_SECRET = "dairy_dev_super_secret_jwt_key_at_least_32_chars_long"
+DEFAULT_ADMIN_PASSWORD = "ChangeMeImmediately123!"
+MIN_PRODUCTION_SECRET_LENGTH = 32
 
 SameSite = Literal["lax", "strict", "none"]
 
@@ -64,6 +73,84 @@ class Settings(BaseSettings):
         validation_alias="REFRESH_TOKEN_EXPIRE_MINUTES",
     )
 
+    # --- Customer portal auth -------------------------------------------
+    customer_jwt_secret: SecretStr | None = Field(
+        default=None,
+        validation_alias="CUSTOMER_JWT_SECRET",
+    )
+    customer_activation_ttl_hours: int = Field(
+        default=72,
+        ge=1,
+        validation_alias="CUSTOMER_ACTIVATION_TTL_HOURS",
+    )
+    customer_refresh_cookie_name: str = Field(
+        default="dairy_customer_refresh_token",
+        validation_alias="CUSTOMER_REFRESH_COOKIE_NAME",
+    )
+    customer_session_hint_cookie_name: str = Field(
+        default="dairy_customer_session",
+        validation_alias="CUSTOMER_SESSION_HINT_COOKIE_NAME",
+    )
+
+    # --- Customer orders ------------------------------------------------
+    customer_order_min_litres: Decimal = Field(
+        default=Decimal("1.00"),
+        gt=0,
+        validation_alias="CUSTOMER_ORDER_MIN_LITRES",
+    )
+    customer_order_max_litres: Decimal = Field(
+        default=Decimal("500.00"),
+        gt=0,
+        validation_alias="CUSTOMER_ORDER_MAX_LITRES",
+    )
+    customer_order_daily_cap_litres: Decimal = Field(
+        default=Decimal("500.00"),
+        gt=0,
+        validation_alias="CUSTOMER_ORDER_DAILY_CAP_LITRES",
+    )
+    customer_order_window_days: int = Field(
+        default=14,
+        ge=0,
+        validation_alias="CUSTOMER_ORDER_WINDOW_DAYS",
+    )
+
+    # --- Email / SMTP ---------------------------------------------------
+    frontend_url: str = Field(
+        default="http://localhost:5173",
+        validation_alias="FRONTEND_URL",
+    )
+    smtp_host: str = Field(default="", validation_alias="SMTP_HOST")
+    smtp_port: int = Field(default=587, ge=1, le=65535, validation_alias="SMTP_PORT")
+    smtp_user: str = Field(default="", validation_alias="SMTP_USER")
+    smtp_password: SecretStr = Field(
+        default=SecretStr(""),
+        validation_alias="SMTP_PASSWORD",
+    )
+    smtp_use_tls: bool = Field(default=True, validation_alias="SMTP_USE_TLS")
+    smtp_use_ssl: bool = Field(default=False, validation_alias="SMTP_USE_SSL")
+    smtp_timeout_seconds: int = Field(
+        default=10,
+        ge=1,
+        le=120,
+        validation_alias="SMTP_TIMEOUT_SECONDS",
+    )
+    mail_from_email: str = Field(
+        default="no-reply@dairyfarm.com",
+        validation_alias="MAIL_FROM_EMAIL",
+    )
+    mail_from_name: str = Field(
+        default="AmritDhara Dairy",
+        validation_alias="MAIL_FROM_NAME",
+    )
+
+    # --- Password reset -------------------------------------------------
+    password_reset_ttl_minutes: int = Field(
+        default=30,
+        ge=5,
+        le=1440,
+        validation_alias="PASSWORD_RESET_TTL_MINUTES",
+    )
+
     # --- Refresh cookie -------------------------------------------------
     refresh_cookie_name: str = Field(
         default="dairy_refresh_token",
@@ -101,7 +188,7 @@ class Settings(BaseSettings):
     admin_username: str = Field(default="admin", validation_alias="ADMIN_USERNAME")
     admin_email: str = Field(default="admin@dairyfarm.com", validation_alias="ADMIN_EMAIL")
     admin_password: SecretStr = Field(
-        default=SecretStr("ChangeMeImmediately123!"),
+        default=SecretStr(DEFAULT_ADMIN_PASSWORD),
         validation_alias="ADMIN_PASSWORD",
     )
 
@@ -119,6 +206,34 @@ class Settings(BaseSettings):
     db_max_overflow: int = Field(default=0, ge=0, validation_alias="DB_MAX_OVERFLOW")
     db_pool_timeout: int = Field(default=30, ge=1, validation_alias="DB_POOL_TIMEOUT")
     db_pool_recycle: int = Field(default=1800, ge=1, validation_alias="DB_POOL_RECYCLE")
+
+    @model_validator(mode="after")
+    def _normalize_smtp_host(self) -> "Settings":
+        """Accept a pasted SMTP URL/`host:port` in `SMTP_HOST`.
+
+        Common misconfiguration: pasting `smtp://localhost:1025` or the
+        Mailpit web-UI URL into `SMTP_HOST`. Left as-is, `getaddrinfo` fails
+        because the scheme is not part of a hostname. Strip the scheme/path
+        and keep any explicit port.
+        """
+        raw = (self.smtp_host or "").strip()
+        if not raw:
+            self.smtp_host = ""
+            return self
+        if "://" in raw:
+            raw = raw.split("://", 1)[1]
+        raw = raw.split("/", 1)[0].strip()
+
+        host, port = raw, None
+        if raw.count(":") == 1 and not raw.startswith("["):
+            candidate_host, _, candidate_port = raw.partition(":")
+            if candidate_port.isdigit() and 1 <= int(candidate_port) <= 65535:
+                host, port = candidate_host, int(candidate_port)
+
+        self.smtp_host = host.strip()
+        if port is not None:
+            self.smtp_port = port
+        return self
 
     @model_validator(mode="after")
     def _widen_refresh_cookie_path(self) -> "Settings":
@@ -140,9 +255,67 @@ class Settings(BaseSettings):
         self.refresh_cookie_path = path if covers else prefix
         return self
 
+    @model_validator(mode="after")
+    def _guard_production_secrets(self) -> "Settings":
+        """Refuse to boot production with development defaults.
+
+        The repo ships working defaults so local setup is frictionless, which
+        also means a copy-pasted `.env` can reach a real deployment: the JWT
+        secret is public and the admin password is known. In production those
+        values, and a shared staff/customer signing key, are fatal and are
+        rejected at startup instead of silently accepted.
+        """
+        if not self.is_production:
+            return self
+
+        problems: list[str] = []
+        jwt_secret = self.jwt_secret.get_secret_value()
+        if (
+            jwt_secret == DEFAULT_JWT_SECRET
+            or len(jwt_secret) < MIN_PRODUCTION_SECRET_LENGTH
+        ):
+            problems.append(
+                f"JWT_SECRET must be a private value of at least "
+                f"{MIN_PRODUCTION_SECRET_LENGTH} characters"
+            )
+
+        customer_secret = (
+            self.customer_jwt_secret.get_secret_value()
+            if self.customer_jwt_secret is not None
+            else ""
+        )
+        if not customer_secret:
+            problems.append(
+                "CUSTOMER_JWT_SECRET must be set so staff and customer tokens "
+                "cannot be signed with the same key"
+            )
+        elif len(customer_secret) < MIN_PRODUCTION_SECRET_LENGTH:
+            problems.append(
+                f"CUSTOMER_JWT_SECRET must be at least "
+                f"{MIN_PRODUCTION_SECRET_LENGTH} characters"
+            )
+        elif customer_secret == jwt_secret:
+            problems.append("CUSTOMER_JWT_SECRET must differ from JWT_SECRET")
+
+        if self.admin_password.get_secret_value() in ("", DEFAULT_ADMIN_PASSWORD):
+            problems.append("ADMIN_PASSWORD must be changed from its default value")
+
+        if problems:
+            raise ValueError(
+                "Unsafe production configuration: " + "; ".join(problems)
+            )
+        return self
+
     @field_validator("database_url", mode="before")
     @classmethod
     def _empty_database_url(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("customer_jwt_secret", mode="before")
+    @classmethod
+    def _empty_customer_jwt_secret(cls, value: object) -> object:
         if isinstance(value, str) and not value.strip():
             return None
         return value
@@ -162,6 +335,18 @@ class Settings(BaseSettings):
             return text or "lax"
         return value
 
+    @field_validator("smtp_use_tls", "smtp_use_ssl", mode="before")
+    @classmethod
+    def _empty_smtp_flag(cls, value: object, info: ValidationInfo) -> object:
+        if isinstance(value, str) and not value.strip():
+            return info.field_name == "smtp_use_tls"
+        return value
+
+    @field_validator("frontend_url")
+    @classmethod
+    def _strip_frontend_url(cls, value: str) -> str:
+        return value.strip().rstrip("/")
+
     @field_validator("refresh_cookie_secure", mode="before")
     @classmethod
     def _empty_cookie_secure(cls, value: object) -> object:
@@ -178,6 +363,16 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.node_env.strip().lower() == "production"
+
+    @property
+    def frontend_base_url(self) -> str:
+        """Origin the SPA is served from, used to build emailed links."""
+        url = (self.frontend_url or "").strip().rstrip("/")
+        return url or "http://localhost:5173"
+
+    @property
+    def mail_enabled(self) -> bool:
+        return bool(self.smtp_host.strip() and self.mail_from_email.strip())
 
     @property
     def cors_origin_list(self) -> list[str]:
@@ -221,6 +416,43 @@ class Settings(BaseSettings):
         """
         return {
             "key": self.session_hint_cookie_name,
+            "path": "/",
+            "domain": self.refresh_cookie_domain,
+            "httponly": False,
+            "secure": self.cookie_secure,
+            "samesite": self.refresh_cookie_samesite,
+        }
+
+    @property
+    def customer_jwt_secret_value(self) -> str:
+        if self.customer_jwt_secret is not None:
+            return self.customer_jwt_secret.get_secret_value()
+        return self.jwt_secret.get_secret_value()
+
+    @property
+    def customer_cookie_path(self) -> str:
+        path = (self.api_v1_prefix or "").strip().rstrip("/")
+        return path if path.startswith("/") else f"/{path}" if path else "/"
+
+    @property
+    def customer_refresh_cookie_max_age(self) -> int:
+        return self.refresh_token_expire_minutes * 60
+
+    @property
+    def customer_refresh_cookie_flags(self) -> dict[str, object]:
+        return {
+            "key": self.customer_refresh_cookie_name,
+            "path": self.customer_cookie_path,
+            "domain": self.refresh_cookie_domain,
+            "httponly": True,
+            "secure": self.cookie_secure,
+            "samesite": self.refresh_cookie_samesite,
+        }
+
+    @property
+    def customer_session_hint_cookie_flags(self) -> dict[str, object]:
+        return {
+            "key": self.customer_session_hint_cookie_name,
             "path": "/",
             "domain": self.refresh_cookie_domain,
             "httponly": False,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
@@ -12,6 +13,8 @@ from app.utils.time import get_business_date
 
 ZERO = Decimal("0")
 CENT = Decimal("0.01")
+
+ReservedLookup = Callable[[date], Awaitable[Decimal]]
 
 
 def _decimal(value: Any) -> Decimal:
@@ -66,6 +69,8 @@ class StockService:
         self,
         raw_date: str,
         requested_litres: Any,
+        *,
+        reserved_lookup: ReservedLookup | None = None,
     ) -> dict[str, str]:
         try:
             requested = _decimal(requested_litres)
@@ -84,32 +89,47 @@ class StockService:
             )
 
         stock = await self.get_stock_for_date(raw_date)
+        stock_day = date.fromisoformat(raw_date)
         current_closing = _decimal(stock["closing_stock"])
-        if current_closing < requested:
-            available = max(ZERO, current_closing)
+        current_reserved = (
+            _decimal(await reserved_lookup(stock_day))
+            if reserved_lookup is not None
+            else ZERO
+        )
+        available = current_closing - current_reserved
+        if available < requested:
+            available = max(ZERO, available)
             raise api_error(
                 status.HTTP_400_BAD_REQUEST,
                 "STOCK_INSUFFICIENT",
                 f"Only {available:.2f} L available",
             )
 
-        future_dates = await self.repository.get_future_active_dates(
-            date.fromisoformat(raw_date)
-        )
+        future_dates = await self.repository.get_future_active_dates(stock_day)
         for future_date in future_dates:
             future_stock = await self.get_stock_for_date(future_date.isoformat())
-            future_closing = _decimal(future_stock["closing_stock"])
-            if future_closing < requested:
+            future_reserved = (
+                _decimal(await reserved_lookup(future_date))
+                if reserved_lookup is not None
+                else ZERO
+            )
+            future_available = (
+                _decimal(future_stock["closing_stock"]) - future_reserved
+            )
+            if future_available < requested:
                 raise api_error(
                     status.HTTP_400_BAD_REQUEST,
                     "STOCK_INSUFFICIENT",
                     "Insufficient stock: Deducting "
                     f"{requested:.2f} L on {raw_date} would result in negative "
                     f"closing stock on {future_date.isoformat()} (only "
-                    f"{future_closing:.2f} L margin)",
+                    f"{max(ZERO, future_available):.2f} L margin)",
                 )
 
         return stock
+
+    async def get_future_active_dates(self, stock_date: date) -> list[date]:
+        return await self.repository.get_future_active_dates(stock_date)
 
     async def get_stock_history(
         self,

@@ -10,8 +10,10 @@ from fastapi import HTTPException
 import app.models  # noqa: F401
 from app.core.config import settings
 from app.core.dependencies import (
+    get_customer_order_repository,
     get_customer_repository,
     get_sale_repository,
+    get_stock_lock_service,
     get_stock_repository,
 )
 from app.core.security import create_access_token
@@ -345,6 +347,22 @@ class FakeSession:
         if model is User:
             return self.users.get(user_id)
         return None
+
+
+class FakeStockLock:
+    def lock(self) -> FakeStockLock:
+        return self
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info: object) -> None:
+        return None
+
+
+class FakeOrderRepository:
+    async def total_approved_litres(self, requested_date: date) -> Decimal:
+        return Decimal("0.00")
 
 
 def build_services() -> tuple[
@@ -727,6 +745,10 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         app.dependency_overrides[get_stock_repository] = (
             lambda: self.stock_repository
+        )
+        app.dependency_overrides[get_stock_lock_service] = FakeStockLock
+        app.dependency_overrides[get_customer_order_repository] = (
+            FakeOrderRepository
         )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),

@@ -121,6 +121,7 @@ class SaleRepository:
         rate: Decimal,
         amount: Decimal,
         recorded_by: int,
+        source_order_id: int | None = None,
     ) -> Sale:
         sale = Sale(
             customer_id=customer_id,
@@ -130,6 +131,7 @@ class SaleRepository:
             amount=amount,
             payment_status="unpaid",
             recorded_by=recorded_by,
+            source_order_id=source_order_id,
             is_deleted=False,
         )
         self.session.add(sale)
