@@ -20,7 +20,13 @@ export function setAuthFailureHandler(handler) {
   authFailureHandler = handler;
 }
 
-const AUTH_ENDPOINTS = ['/auth/login', '/auth/refresh', '/auth/logout'];
+const AUTH_ENDPOINTS = [
+  '/auth/login',
+  '/auth/refresh',
+  '/auth/logout',
+  '/auth/forgot-password',
+  '/auth/reset-password',
+];
 
 // Set by the API on login and cleared on logout. It holds no secret — it only
 // tells the app whether it is worth asking for a fresh access token, so a

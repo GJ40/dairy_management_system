@@ -2,15 +2,32 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
 import { AuthProvider } from './context/AuthContext';
+import { CustomerAuthProvider } from './context/CustomerAuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
+import CustomerProtectedRoute from './components/CustomerProtectedRoute';
 import AppLayout from './layouts/AppLayout';
+import CustomerLayout from './layouts/CustomerLayout';
+import CustomerLogin from './pages/customer/CustomerLogin';
+import CustomerActivate from './pages/customer/CustomerActivate';
+import CustomerForgotPassword from './pages/customer/CustomerForgotPassword';
+import CustomerResetPassword from './pages/customer/CustomerResetPassword';
+import CustomerPortalDashboard from './pages/customer/CustomerDashboard';
+import CustomerPortalOrders from './pages/customer/CustomerOrders';
+import CustomerPortalInvoices from './pages/customer/CustomerInvoices';
+import CustomerPortalQueries from './pages/customer/CustomerQueries';
+import CustomerPortalProfile from './pages/customer/CustomerProfile';
 import Landing from './pages/Landing/Landing';
 import Login from './pages/Login/Login';
+import ForgotPassword from './pages/ForgotPassword/ForgotPassword';
+import ResetPassword from './pages/ResetPassword/ResetPassword';
 import Dashboard from './pages/Dashboard/Dashboard';
 import Buffaloes from './pages/Buffaloes/Buffaloes';
 import Production from './pages/Production/Production';
 import Stock from './pages/Stock/Stock';
 import Customers from './pages/Customers/Customers';
+import CustomerOrders from './pages/CustomerOrders/CustomerOrders';
+import CustomerQueries from './pages/CustomerQueries/CustomerQueries';
+import PortalAccounts from './pages/PortalAccounts/PortalAccounts';
 import Sales from './pages/Sales/Sales';
 import Invoices from './pages/Invoices/Invoices';
 import Reports from './pages/Reports/Reports';
@@ -22,12 +39,41 @@ export function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Routes>
+        <CustomerAuthProvider>
+          <Routes>
           {/* Public-facing Dairy Landing Page */}
           <Route path="/" element={<Landing />} />
 
           {/* Dedicated Staff / Operator Login Screen */}
           <Route path="/login" element={<Login />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password" element={<ResetPassword />} />
+
+          {/* Customer Self-Service Portal */}
+          <Route path="/portal/login" element={<CustomerLogin />} />
+          <Route path="/portal/activate" element={<CustomerActivate />} />
+          <Route
+            path="/portal/forgot-password"
+            element={<CustomerForgotPassword />}
+          />
+          <Route
+            path="/portal/reset-password"
+            element={<CustomerResetPassword />}
+          />
+          <Route
+            path="/portal"
+            element={
+              <CustomerProtectedRoute>
+                <CustomerLayout />
+              </CustomerProtectedRoute>
+            }
+          >
+            <Route index element={<CustomerPortalDashboard />} />
+            <Route path="orders" element={<CustomerPortalOrders />} />
+            <Route path="invoices" element={<CustomerPortalInvoices />} />
+            <Route path="queries" element={<CustomerPortalQueries />} />
+            <Route path="profile" element={<CustomerPortalProfile />} />
+          </Route>
 
           {/* Authenticated Application Shell Routes */}
           <Route
@@ -42,6 +88,8 @@ export function App() {
             <Route path="/production" element={<Production />} />
             <Route path="/stock" element={<Stock />} />
             <Route path="/customers" element={<Customers />} />
+            <Route path="/customer-orders" element={<CustomerOrders />} />
+            <Route path="/customer-queries" element={<CustomerQueries />} />
             <Route path="/sales" element={<Sales />} />
             <Route path="/invoices" element={<Invoices />} />
             <Route path="/reports" element={<Reports />} />
@@ -52,6 +100,15 @@ export function App() {
               element={
                 <ProtectedRoute allowedRoles={['admin']}>
                   <Expenses />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/portal-accounts"
+              element={
+                <ProtectedRoute allowedRoles={['admin']}>
+                  <PortalAccounts />
                 </ProtectedRoute>
               }
             />
@@ -82,8 +139,9 @@ export function App() {
               </div>
             }
           />
-        </Routes>
-        <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} />
+          </Routes>
+          <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} />
+        </CustomerAuthProvider>
       </AuthProvider>
     </BrowserRouter>
   );

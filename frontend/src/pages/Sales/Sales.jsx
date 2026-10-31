@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'react-toastify';
 import { useAuth } from '../../hooks/useAuth';
-import { getSales, createSale, deleteSale } from '../../api/sales';
+import { getSales, createSale, updateSale, deleteSale } from '../../api/sales';
 import { getCustomers } from '../../api/customers';
 import { getTodayKolkataDate, formatDate, formatCurrency, formatLitres } from '../../utils/formatters';
 import PageHeader from '../../components/PageHeader';
@@ -9,14 +9,13 @@ import ConfirmModal from '../../components/ConfirmModal';
 import EmptyState from '../../components/EmptyState';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorAlert from '../../components/ErrorAlert';
-import { ShoppingCart, Plus, Trash2, Search, X, Calendar, CheckCircle2, Clock, RefreshCw, IndianRupee } from 'lucide-react';
+import { ShoppingCart, Plus, Pencil, Trash2, Search, X, Calendar, CheckCircle2, Clock, RefreshCw, IndianRupee } from 'lucide-react';
 
 const EMPTY_FORM = {
   customer_id: '',
   sale_date: '',
   litres: '',
   rate: '',
-  payment_status: 'unpaid',
 };
 
 const PAYMENT_BADGE = {
@@ -36,6 +35,9 @@ export default function Sales() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ ...EMPTY_FORM, sale_date: today });
   const [formLoading, setFormLoading] = useState(false);
+  const [editTarget, setEditTarget] = useState(null);
+  const [editForm, setEditForm] = useState({ sale_date: '', litres: '', rate: '' });
+  const [editLoading, setEditLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
 
   const fetchSales = useCallback(() => {
@@ -90,7 +92,6 @@ export default function Sales() {
         sale_date: form.sale_date,
         litres: litres.toFixed(2),
         rate: rate.toFixed(2),
-        payment_status: form.payment_status,
       });
       toast.success('Sale recorded successfully!');
       setShowForm(false);
@@ -100,6 +101,41 @@ export default function Sales() {
       toast.error(err.message || 'Failed to record sale.');
     } finally {
       setFormLoading(false);
+    }
+  };
+
+  const openEdit = (sale) => {
+    setEditTarget(sale);
+    setEditForm({
+      sale_date: sale.sale_date || '',
+      litres: sale.litres ? String(parseFloat(sale.litres)) : '',
+      rate: sale.rate ? String(parseFloat(sale.rate)) : '',
+    });
+  };
+
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    if (!editTarget) return;
+    const litres = parseFloat(editForm.litres);
+    const rate = parseFloat(editForm.rate);
+    if (isNaN(litres) || litres <= 0 || isNaN(rate) || rate <= 0) {
+      toast.error('Enter valid litres and rate values.');
+      return;
+    }
+    setEditLoading(true);
+    try {
+      await updateSale(editTarget.id, {
+        sale_date: editForm.sale_date,
+        litres: litres.toFixed(2),
+        rate: rate.toFixed(2),
+      });
+      toast.success('Sale updated successfully!');
+      setEditTarget(null);
+      refreshSales();
+    } catch (err) {
+      toast.error(err.message || 'Failed to update sale.');
+    } finally {
+      setEditLoading(false);
     }
   };
 
@@ -216,7 +252,7 @@ export default function Sales() {
                   <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Amount</th>
                   <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Payment</th>
                   <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Recorded By</th>
-                  {isAdmin && <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider"></th>}
+                  <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
@@ -235,17 +271,26 @@ export default function Sales() {
                       </span>
                     </td>
                     <td className="px-4 py-3 text-slate-500 text-xs">{s.recorder?.username || '—'}</td>
-                    {isAdmin && (
-                      <td className="px-4 py-3">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1">
                         <button
-                          onClick={() => setDeleteTarget(s)}
-                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                          title="Delete sale"
+                          onClick={() => openEdit(s)}
+                          className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
+                          title="Edit sale"
                         >
-                          <Trash2 className="w-4 h-4" />
+                          <Pencil className="w-4 h-4" />
                         </button>
-                      </td>
-                    )}
+                        {isAdmin && (
+                          <button
+                            onClick={() => setDeleteTarget(s)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                            title="Delete sale"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -287,7 +332,7 @@ export default function Sales() {
                   ))}
                 </select>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Sale Date <span className="text-rose-500">*</span></label>
                   <input
@@ -298,17 +343,6 @@ export default function Sales() {
                     onChange={(e) => setForm({ ...form, sale_date: e.target.value })}
                     className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
                   />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">Payment Status</label>
-                  <select
-                    value={form.payment_status}
-                    onChange={(e) => setForm({ ...form, payment_status: e.target.value })}
-                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400 bg-white"
-                  >
-                    <option value="unpaid">Unpaid</option>
-                    <option value="paid">Paid</option>
-                  </select>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
@@ -359,6 +393,93 @@ export default function Sales() {
                   className="px-4 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition disabled:opacity-60"
                 >
                   {formLoading ? 'Recording…' : 'Record Sale'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Sale Modal */}
+      {editTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+            <div className="flex items-center justify-between p-6 border-b border-slate-100">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 flex items-center justify-center">
+                  <Pencil className="w-5 h-5 text-emerald-700" />
+                </div>
+                <div>
+                  <h2 className="font-bold text-slate-900">Edit Milk Sale</h2>
+                  <p className="text-xs text-slate-500">
+                    {getCustomerName(editTarget)} — stock recalculates for this date and later
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setEditTarget(null)} className="p-1.5 hover:bg-slate-100 rounded-lg transition">
+                <X className="w-5 h-5 text-slate-500" />
+              </button>
+            </div>
+            <form onSubmit={handleUpdate} className="p-6 space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Sale Date <span className="text-rose-500">*</span></label>
+                <input
+                  required
+                  type="date"
+                  value={editForm.sale_date}
+                  max={today}
+                  onChange={(e) => setEditForm({ ...editForm, sale_date: e.target.value })}
+                  className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Litres <span className="text-rose-500">*</span></label>
+                  <input
+                    required
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={editForm.litres}
+                    onChange={(e) => setEditForm({ ...editForm, litres: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Rate/L (₹) <span className="text-rose-500">*</span></label>
+                  <input
+                    required
+                    type="number"
+                    min="0.01"
+                    step="0.01"
+                    value={editForm.rate}
+                    onChange={(e) => setEditForm({ ...editForm, rate: e.target.value })}
+                    className="w-full px-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-400"
+                  />
+                </div>
+              </div>
+              {editForm.litres && editForm.rate && (
+                <div className="flex items-center gap-2 p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                  <IndianRupee className="w-4 h-4 text-emerald-600" />
+                  <span className="text-sm text-emerald-700 font-semibold">
+                    Total: {formatCurrency((parseFloat(editForm.litres) * parseFloat(editForm.rate)).toFixed(2))}
+                  </span>
+                </div>
+              )}
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setEditTarget(null)}
+                  className="px-4 py-2 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editLoading}
+                  className="px-4 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg transition disabled:opacity-60"
+                >
+                  {editLoading ? 'Saving…' : 'Save Changes'}
                 </button>
               </div>
             </form>

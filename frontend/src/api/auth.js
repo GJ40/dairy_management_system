@@ -36,3 +36,35 @@ export async function logoutApi() {
 export async function getMeApi() {
   return apiClient.get('/auth/me');
 }
+
+/**
+ * Ask the API to email a single-use password reset link. The response is the
+ * same whether or not the address belongs to an account.
+ * @param {string} email
+ * @returns {Promise<{ message: string }>}
+ */
+export async function forgotPasswordApi(email) {
+  return apiClient.post('/auth/forgot-password', { email });
+}
+
+/**
+ * Check a reset link before showing the form. A dead link rejects with
+ * INVALID_RESET_TOKEN, RESET_TOKEN_EXPIRED or RESET_TOKEN_USED.
+ * @param {string} token
+ * @returns {Promise<{ valid: boolean }>}
+ */
+export async function validateResetTokenApi(token) {
+  return apiClient.get('/auth/reset-password/validate', {
+    params: { token },
+  });
+}
+
+/**
+ * Consume the reset token and store the new password.
+ * @param {string} token
+ * @param {string} password
+ * @returns {Promise<{ message: string }>}
+ */
+export async function resetPasswordApi(token, password) {
+  return apiClient.post('/auth/reset-password', { token, password });
+}

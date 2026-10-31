@@ -15,7 +15,6 @@ import {
   HeartHandshake,
   CheckCircle,
   ThermometerSnowflake,
-  ExternalLink,
 } from 'lucide-react';
 import { toast } from 'react-toastify';
 
@@ -142,11 +141,10 @@ export function Landing() {
               </Link>
             ) : (
               <Link
-                to="/login"
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-xs"
+                to="/portal/login"
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-emerald-200 bg-white hover:bg-emerald-50 text-emerald-800 text-xs font-bold transition"
               >
-                <span>Staff Portal</span>
-                <ExternalLink className="w-3.5 h-3.5 text-emerald-400" />
+                <span>Customer Portal</span>
               </Link>
             )}
           </div>
@@ -610,7 +608,7 @@ export function Landing() {
       {/* Footer */}
       <footer className="bg-slate-950 text-slate-400 text-xs py-12 border-t border-slate-800">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-8 pb-10 border-b border-slate-800">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-8 pb-10 border-b border-slate-800">
             <div className="md:col-span-2 space-y-3">
               <div className="flex items-center gap-2 text-white font-bold text-lg">
                 <Milk className="w-5 h-5 text-emerald-400" />
@@ -634,19 +632,6 @@ export function Landing() {
               </ul>
             </div>
 
-            <div>
-              <p className="text-white font-bold text-xs uppercase tracking-wider mb-3">Internal Access</p>
-              <p className="text-slate-400 text-xs mb-3">
-                Authorized farm operators and managers access the internal live inventory and production grid:
-              </p>
-              <Link
-                to="/login"
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-semibold transition"
-              >
-                <span>Staff Portal Sign In</span>
-                <ArrowRight className="w-3.5 h-3.5" />
-              </Link>
-            </div>
           </div>
 
           <div className="pt-6 flex flex-col sm:flex-row items-center justify-between text-[11px] text-slate-500">
