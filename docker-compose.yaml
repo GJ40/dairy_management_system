@@ -1,0 +1,141 @@
+# ==============================================================================
+# Docker Compose for Dairy Management System
+# Services:
+#   - db: MySQL 8 with persistent storage and health check
+#   - backend: Python 3.11 FastAPI REST API (with uv package manager)
+#   - frontend: React 19 SPA served via Nginx with /api/ reverse proxy
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # 1. Database Service (MySQL 8)
+  # ----------------------------------------------------------------------------
+  db:
+    image: mysql:8.0
+    container_name: dairy_db
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-dairy_db}
+      # MYSQL_USER: ${DB_USER:-root}
+      # MYSQL_PASSWORD: ${DB_PASSWORD:-root}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - dairy_mysql_data:/var/lib/mysql
+    networks:
+      - dairy_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${DB_ROOT_PASSWORD:-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+
+  # ----------------------------------------------------------------------------
+  # 2. Application Backend Service (FastAPI)
+  # ----------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend_py
+      dockerfile: Dockerfile
+    container_name: dairy_backend
+    restart: unless-stopped
+    command: sh -c "alembic upgrade head && python -m app.seeders.base_seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: 8000
+      NODE_ENV: ${NODE_ENV:-development}
+      TZ: Asia/Kolkata
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000,http://localhost:80}
+      # Database Connection
+      DB_DIALECT: mysql
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-dairy_db}
+      DB_USER: ${DB_USER:-root}
+      DB_PASSWORD: ${DB_PASSWORD:-root}
+      DB_LOGGING: ${DB_LOGGING:-false}
+      DB_POOL_SIZE: 10
+      # Security & JWT Tokens
+      JWT_SECRET: ${JWT_SECRET:-change-me-to-at-least-32-random-characters}
+      CUSTOMER_JWT_SECRET: ${CUSTOMER_JWT_SECRET:-change-me-to-at-least-32-customer-characters}
+      ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+      REFRESH_TOKEN_EXPIRE_MINUTES: ${REFRESH_TOKEN_EXPIRE_MINUTES:-480}
+      # Bootstrap Admin Account
+      ADMIN_NAME: ${ADMIN_NAME:-System Admin}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@dairyfarm.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-AdminSecurePass123}
+      # Customer Portal Settings
+      CUSTOMER_ACTIVATION_TTL_HOURS: ${CUSTOMER_ACTIVATION_TTL_HOURS:-72}
+      CUSTOMER_ORDER_MIN_LITRES: ${CUSTOMER_ORDER_MIN_LITRES:-1.00}
+      CUSTOMER_ORDER_MAX_LITRES: ${CUSTOMER_ORDER_MAX_LITRES:-500.00}
+      CUSTOMER_ORDER_DAILY_CAP_LITRES: ${CUSTOMER_ORDER_DAILY_CAP_LITRES:-500.00}
+      CUSTOMER_ORDER_WINDOW_DAYS: ${CUSTOMER_ORDER_WINDOW_DAYS:-14}
+      # Email & SMTP Configuration
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:5173}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - dairy_network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/health\").read()' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ----------------------------------------------------------------------------
+  # 3. Application Frontend Service (React 19 + Nginx)
+  # ----------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
+        VITE_SESSION_HINT_COOKIE: dairy_session
+        VITE_CUSTOMER_SESSION_HINT_COOKIE: dairy_customer_session
+    container_name: dairy_frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    networks:
+      - dairy_network
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:80/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+
+# ------------------------------------------------------------------------------
+# Persistent Storage Volumes
+# ------------------------------------------------------------------------------
+volumes:
+  dairy_mysql_data:
+    name: dairy_mysql_data
+
+# ------------------------------------------------------------------------------
+# Isolated Internal Network
+# ------------------------------------------------------------------------------
+networks:
+  dairy_network:
+    name: dairy_network
+    driver: bridge
+
