@@ -177,6 +177,7 @@ export function PasswordResetConfirm({
   resetPassword,
   loginPath,
   forgotPath,
+  onSuccess,
 }) {
   const [searchParams] = useSearchParams();
   const token = (searchParams.get('token') || '').trim();
@@ -233,6 +234,12 @@ export function PasswordResetConfirm({
       setPassword('');
       setConfirmPassword('');
       setStatus('success');
+      // The API just bumped token_version, so any session open in this browser
+      // is already dead. Drop its local state now instead of letting the next
+      // request bounce the user through an "expired session" redirect.
+      if (onSuccess) {
+        Promise.resolve(onSuccess()).catch(() => {});
+      }
     } catch (error) {
       if (TOKEN_ERRORS[error?.code]) {
         setInvalidReason(tokenErrorMessage(error));
