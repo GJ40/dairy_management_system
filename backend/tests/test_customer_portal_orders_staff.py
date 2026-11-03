@@ -32,7 +32,7 @@ from tests.test_customer_portal_orders import (
     make_customer,
     make_order,
 )
-from tests.test_phase7 import make_user
+from tests.test_customers_and_sales import make_user
 
 TODAY = business_now().date()
 

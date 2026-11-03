@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import (
     Field,
@@ -299,6 +300,19 @@ class Settings(BaseSettings):
 
         if self.admin_password.get_secret_value() in ("", DEFAULT_ADMIN_PASSWORD):
             problems.append("ADMIN_PASSWORD must be changed from its default value")
+
+        frontend = urlparse(self.frontend_base_url)
+        frontend_host = (frontend.hostname or "").lower()
+        if (
+            frontend.scheme != "https"
+            or not frontend_host
+            or frontend_host in {"localhost", "127.0.0.1", "::1"}
+        ):
+            # Reset/activation links carry live tokens; a localhost or plain
+            # HTTP URL would make them unusable and expose the token in transit.
+            problems.append(
+                "FRONTEND_URL must be the public https origin used in emailed links"
+            )
 
         if problems:
             raise ValueError(

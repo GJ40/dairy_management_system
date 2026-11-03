@@ -47,7 +47,7 @@ from app.services.customer_portal_auth_service import (
     issue_activation_token,
 )
 from app.utils.time import business_now_naive
-from tests.test_phase3 import FakeUserRepository, make_user
+from tests.test_auth_and_users import FakeUserRepository, make_user
 
 CREATED = datetime(2026, 10, 30, 12, 0, 0)
 PASSWORD = "customer-pass-123"

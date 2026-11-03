@@ -21,8 +21,8 @@ from tests.test_customer_portal_orders_staff import (
     FakeSaleRepository,
     FakeStockService,
 )
-from tests.test_phase7 import TODAY as SALE_DAY
-from tests.test_phase7 import build_services, make_user
+from tests.test_customers_and_sales import TODAY as SALE_DAY
+from tests.test_customers_and_sales import build_services, make_user
 
 
 class SerialLock:

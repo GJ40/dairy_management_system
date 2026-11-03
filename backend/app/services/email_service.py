@@ -224,12 +224,16 @@ class EmailService:
         link: str | None = None,
     ) -> bool:
         if not settings.mail_enabled:
+            # The link is a live credential. Echoing it is a local-convenience
+            # feature only; a production misconfiguration must not write reset
+            # tokens into the log.
+            link_note = f" Link: {link}" if link and not settings.is_production else ""
             logger.warning(
                 "SMTP is not configured (SMTP_HOST is empty); %r for %s was not "
                 "sent.%s",
                 subject,
                 to,
-                f" Link: {link}" if link else "",
+                link_note,
             )
             return False
 

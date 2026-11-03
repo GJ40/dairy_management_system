@@ -11,7 +11,7 @@ from app.db.session import get_db
 from app.main import app
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
-from tests.test_phase3 import FakeSession, FakeUserRepository, make_user
+from tests.test_auth_and_users import FakeSession, FakeUserRepository, make_user
 
 COOKIE = settings.refresh_cookie_name
 HINT = settings.session_hint_cookie_name

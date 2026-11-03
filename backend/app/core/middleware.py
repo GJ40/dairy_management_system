@@ -62,6 +62,19 @@ class BodySizeLimitMiddleware:
         self.app = app
         self.max_bytes = max_bytes
 
+    @staticmethod
+    async def _too_large(scope: Scope, receive: Receive, send: Send) -> None:
+        response = JSONResponse(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            content={
+                "error": {
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": "request entity too large",
+                }
+            },
+        )
+        await response(scope, receive, send)
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -75,19 +88,38 @@ class BodySizeLimitMiddleware:
             except ValueError:
                 length = None
             if length is not None and length > self.max_bytes:
-                response = JSONResponse(
-                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
-                    content={
-                        "error": {
-                            "code": "PAYLOAD_TOO_LARGE",
-                            "message": "request entity too large",
-                        }
-                    },
-                )
-                await response(scope, receive, send)
+                await self._too_large(scope, receive, send)
                 return
 
-        await self.app(scope, receive, send)
+        # A declared Content-Length can be absent (chunked bodies) or lie, so
+        # the actual stream is capped too. The body is buffered up to the limit
+        # and then replayed to the app; every route here accepts small JSON.
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            body.extend(message.get("body", b""))
+            if len(body) > self.max_bytes:
+                await self._too_large(scope, receive, send)
+                return
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def replay() -> Message:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {
+                    "type": "http.request",
+                    "body": bytes(body),
+                    "more_body": False,
+                }
+            return {"type": "http.disconnect"}
+
+        await self.app(scope, replay, send)
 
 
 class SecurityHeadersMiddleware:
