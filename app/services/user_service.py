@@ -150,6 +150,9 @@ class UserService:
 
         if "password" in updates:
             user.password_hash = hash_password(updates["password"])
+            # Administrative password change is a revocation event: sessions
+            # issued with the old password must stop refreshing.
+            user.token_version = (user.token_version or 0) + 1
 
         if "role" in updates:
             user.role = updates["role"]
@@ -180,7 +183,11 @@ class UserService:
                 "Administrators cannot deactivate their own account",
             )
 
-        user.is_active = is_active
+        if user.is_active != is_active:
+            user.is_active = is_active
+            # A token blocked only by is_active would work again after a
+            # reactivation; bump so pre-deactivation sessions stay dead.
+            user.token_version = (user.token_version or 0) + 1
         await self._commit(creating=False)
         await self.repository.refresh(user)
         return serialize_user(user)
@@ -223,6 +230,7 @@ class UserService:
 
         user.is_deleted = True
         user.is_active = False
+        user.token_version = (user.token_version or 0) + 1
         await self._commit(creating=False)
 
         return {

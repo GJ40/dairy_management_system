@@ -1,6 +1,6 @@
-# Progress — Python/FastAPI Migration
+# Progress â€” Python/FastAPI Migration
 
-**Current phase:** Phase 15 complete — session revocation + background email
+**Current phase:** Phase 15 complete â€” session revocation + background email
 **Last updated:** 2026-10-31
 **Target:** `backend_py/` only
 **Reference:** `backend/` (do not modify)
@@ -43,10 +43,10 @@ passed at the end of Phase 8; no application DDL or live data change has been ex
 
 ## Phase 0 deliverables
 
-- `MIGRATION_PLAN.md` — structure, modules, endpoints, dependencies, PRD matrix, risks, order, Alembic strategy, seed plan.
-- `API_PARITY.md` — 51 endpoints with auth, request/response envelopes, errors, test plan.
-- `SCHEMA_MAPPING.md` — 10 tables, exact columns/types/constraints/indexes/FKs, baseline procedure.
-- `PROGRESS.md` — this file.
+- `MIGRATION_PLAN.md` â€” structure, modules, endpoints, dependencies, PRD matrix, risks, order, Alembic strategy, seed plan.
+- `API_PARITY.md` â€” 51 endpoints with auth, request/response envelopes, errors, test plan.
+- `SCHEMA_MAPPING.md` â€” 10 tables, exact columns/types/constraints/indexes/FKs, baseline procedure.
+- `PROGRESS.md` â€” this file.
 
 Read-only inspection performed:
 
@@ -71,18 +71,19 @@ Not performed (no approval):
 
 Created:
 
-- `app/core/config.py` — pydantic-settings, env aliases, masked secrets, async MySQL URL builder.
-- `app/core/errors.py` — Node-compatible error envelope, 400 validation / 404 / 405 / 500 handlers.
-- `app/core/middleware.py` — 1 MB body limit, Helmet-style headers, request logging.
-- `app/core/logging.py` — root logging setup.
-- `app/db/session.py` — async engine, session factory, DB health probe, dispose.
-- `app/db/base.py` — declarative base for Phase 2 models.
-- `app/routers/health.py` — `/health` + `/api/v1/health`.
-- `app/routers/docs.py` — Swagger UI at `/docs` and `/api/v1/docs`.
-- `app/main.py` — app factory, CORS, middleware order, OpenAPI at `/api/v1/docs/openapi.json`.
+- `app/core/config.py` â€” pydantic-settings, env aliases, masked secrets, async MySQL URL builder.
+- `app/core/errors.py` â€” Node-compatible error envelope, 400 validation / 404 / 405 / 500 handlers.
+- `app/core/middleware.py` â€” 1 MB body limit, Helmet-style headers, request logging.
+- `app/core/logging.py` â€” root logging setup.
+- `app/db/session.py` â€” async engine, session factory, DB health probe, dispose.
+- `app/db/base.py` â€” declarative base for Phase 2 models.
+- `app/routers/health.py` â€” `/health` + `/api/v1/health`.
+- `app/routers/docs.py` â€” Swagger UI at `/docs` and `/api/v1/docs`.
+- `app/main.py` â€” app factory, CORS, middleware order, OpenAPI at `/api/v1/docs/openapi.json`.
 - `app/schemas/health.py`, `app/utils/time.py`.
 - `.env.example` (placeholders only, no real secrets).
-- `tests/test_phase1.py` — stdlib `unittest` + `httpx` smoke tests (no live DB).
+- `tests/test_health_and_docs.py`, `tests/test_middleware.py`, `tests/test_time.py` â€”
+  stdlib `unittest` + `httpx` smoke tests (no live DB).
 
 Dependencies:
 
@@ -92,11 +93,11 @@ Dependencies:
 
 Verification:
 
-- `uv run python -m unittest discover -s tests -v` → **11 tests passed**.
-- `uv run python -m compileall -q app tests` → passed.
+- `uv run python -m unittest discover -s tests -v` â†’ **11 tests passed**.
+- `uv run python -m compileall -q app tests` â†’ passed.
 - Confirmed: `/health` and `/api/v1/health`; `/docs` and `/api/v1/docs`; generated OpenAPI at
   `/api/v1/docs/openapi.json`; 404/405 envelope; CORS preflight with credentials; security headers;
-  1 MB body limit → 413; Asia/Kolkata business-date boundary.
+  1 MB body limit â†’ 413; Asia/Kolkata business-date boundary.
 - Settings load without `.env`; driver resolves to `mysql+asyncmy`; secrets render masked.
 - No MySQL connection was opened; health DB check was mocked in tests.
 
@@ -123,32 +124,32 @@ Live inspection (read-only, approved):
 
 Created:
 
-- `app/models/` — 10 SQLAlchemy 2.x models with exact live type, nullability, server defaults,
+- `app/models/` â€” 10 SQLAlchemy 2.x models with exact live type, nullability, server defaults,
   index names, FK names/rules, engine, charset, and collation.
-- `app/models/base.py` — `TimestampMixin`, `SoftDeleteMixin`, and timezone-naive timestamp helper.
-- `alembic.ini` — no embedded URL; imports `settings` from `%(here)s`.
-- `alembic/env.py` — async engine from `settings.sqlalchemy_database_url`, `Base.metadata` target.
-- `alembic/script.py.mako`, `alembic/versions/0001_baseline_existing_schema.py` — empty baseline.
-- `tests/test_models.py` — 12 no-DB tests for tables, indexes, cascades, decimals, timestamps,
+- `app/models/base.py` â€” `TimestampMixin`, `SoftDeleteMixin`, and timezone-naive timestamp helper.
+- `alembic.ini` â€” no embedded URL; imports `settings` from `%(here)s`.
+- `alembic/env.py` â€” async engine from `settings.sqlalchemy_database_url`, `Base.metadata` target.
+- `alembic/script.py.mako`, `alembic/versions/0001_baseline_existing_schema.py` â€” empty baseline.
+- `tests/test_models.py` â€” 12 no-DB tests for tables, indexes, cascades, decimals, timestamps,
   collation, and normalizers.
 
 Verification:
 
 - Metadata comparator vs live snapshot: **MATCH** (10 tables, columns, types, nullability,
   defaults, indexes, FKs, engine, collation).
-- `uv run python -m unittest discover -s tests -v` → **23 tests passed**.
-- `uv run python -m compileall -q app tests alembic` → passed.
-- `alembic history` / `heads` → `0001_baseline (head)`.
-- `alembic upgrade head --sql` → only `CREATE TABLE alembic_version` + baseline INSERT; no
+- `uv run python -m unittest discover -s tests -v` â†’ **23 tests passed**.
+- `uv run python -m compileall -q app tests alembic` â†’ passed.
+- `alembic history` / `heads` â†’ `0001_baseline (head)`.
+- `alembic upgrade head --sql` â†’ only `CREATE TABLE alembic_version` + baseline INSERT; no
   application DDL. Offline SQL generation opened no DB connection.
-- `alembic stamp head` approved and executed → `alembic_version = 0001_baseline`.
-- Post-stamp read-only check → 11 tables: the original 10 plus `alembic_version`; no application
+- `alembic stamp head` approved and executed â†’ `alembic_version = 0001_baseline`.
+- Post-stamp read-only check â†’ 11 tables: the original 10 plus `alembic_version`; no application
   table was created, altered, or dropped.
 
 Not performed:
 
 - No application DDL, Alembic `upgrade`, or seed against MySQL.
-- No live ORM writes; Phases 3–4 performed read-only list/get/count queries against the live
+- No live ORM writes; Phases 3â€“4 performed read-only list/get/count queries against the live
   `users` and `buffaloes` tables.
 - No `backend_py/.env` was created; live commands read credentials transiently from the existing
   backend configuration without printing them.
@@ -159,19 +160,19 @@ Not performed:
 
 Created:
 
-- `app/core/security.py` — bcrypt cost 10 with 72-byte truncation; HS256 JWT with
+- `app/core/security.py` â€” bcrypt cost 10 with 72-byte truncation; HS256 JWT with
   `{id,email,username,role,iat,exp}`.
-- `app/core/dependencies.py` — Bearer authentication, DB reload, deleted/inactive rejection,
+- `app/core/dependencies.py` â€” Bearer authentication, DB reload, deleted/inactive rejection,
   `require_roles`/`require_admin`, repository/service dependencies.
-- `app/schemas/user.py` — login/create/update/status request validation, query parsing model,
+- `app/schemas/user.py` â€” login/create/update/status request validation, query parsing model,
   Node-compatible user serialization.
-- `app/repositories/user_repository.py` — async user lookup, list/count, create, commit helpers.
-- `app/services/auth_service.py` — login, generic credential errors, inactive check, `/auth/me`.
-- `app/services/user_service.py` — admin list/create/get/update/status, duplicate checks,
+- `app/repositories/user_repository.py` â€” async user lookup, list/count, create, commit helpers.
+- `app/services/auth_service.py` â€” login, generic credential errors, inactive check, `/auth/me`.
+- `app/services/user_service.py` â€” admin list/create/get/update/status, duplicate checks,
   self-deactivation guard, normalized email/username, hashed passwords.
-- `app/routers/auth.py`, `app/routers/users.py` — `/api/v1/auth/*` and admin-only `/api/v1/users`.
-- `tests/test_phase3.py` — security, serialization, service, and API tests with fake repository/DB.
-- `pyproject.toml` — installed `pytest`, `ruff`; added a conservative ruff config.
+- `app/routers/auth.py`, `app/routers/users.py` â€” `/api/v1/auth/*` and admin-only `/api/v1/users`.
+- `tests/test_auth_and_users.py` â€” security, serialization, service, and API tests with fake repository/DB.
+- `pyproject.toml` â€” installed `pytest`, `ruff`; added a conservative ruff config.
 
 Contract details preserved:
 
@@ -187,8 +188,8 @@ Contract details preserved:
 
 Verification:
 
-- `uv run pytest -q` → **72 passed** (including 23 prior tests).
-- `uv run ruff check app tests` → clean.
+- `uv run pytest -q` â†’ **72 passed** (including 23 prior tests).
+- `uv run ruff check app tests` â†’ clean.
 - Read-only live smoke test: list users (`total=13`), email lookup, `/auth/me` shape, and service
   serialization succeeded; id 1 timestamp `2026-10-28 12:10:23` serialized to
   `2026-10-28T06:40:23.000Z`, matching Node.
@@ -200,20 +201,20 @@ Verification:
 
 Created:
 
-- `app/schemas/buffalo.py` — create/update validation, query model, exact errors, buffalo
+- `app/schemas/buffalo.py` â€” create/update validation, query model, exact errors, buffalo
   serialization with camel-case timestamps.
-- `app/repositories/buffalo_repository.py` — non-deleted lookup, tag lookup, filtered list/count,
+- `app/repositories/buffalo_repository.py` â€” non-deleted lookup, tag lookup, filtered list/count,
   status counts, create/commit helpers.
-- `app/repositories/delete_repository.py` — generic soft delete by model and ID.
-- `app/services/buffalo_service.py` — list/get/create/update/counts, tag normalization,
+- `app/repositories/delete_repository.py` â€” generic soft delete by model and ID.
+- `app/services/buffalo_service.py` â€” list/get/create/update/counts, tag normalization,
   duplicate messages, date conversion.
-- `app/services/delete_service.py` — allowlist, admin soft delete, Node-compatible response and
+- `app/services/delete_service.py` â€” allowlist, admin soft delete, Node-compatible response and
   not-found messages.
-- `app/routers/buffaloes.py`, `app/routers/delete.py` — `/api/v1/buffaloes/*` for admin+operator
+- `app/routers/buffaloes.py`, `app/routers/delete.py` â€” `/api/v1/buffaloes/*` for admin+operator
   and admin-only `DELETE /api/v1/{resource}/{id}`.
-- `app/core/dependencies.py`, `app/main.py`, `app/core/errors.py`, `app/utils/time.py` — wiring,
+- `app/core/dependencies.py`, `app/main.py`, `app/core/errors.py`, `app/utils/time.py` â€” wiring,
   validation labels, shared timestamp helper.
-- `tests/test_phase4.py` — serialization, validation, service, delete, and API tests with fakes.
+- `tests/test_buffaloes_and_soft_delete.py` â€” serialization, validation, service, delete, and API tests with fakes.
 
 Contract details preserved:
 
@@ -229,8 +230,8 @@ Contract details preserved:
 
 Verification:
 
-- `uv run pytest -q` → **103 passed**.
-- `uv run ruff check app tests` → clean; compileall clean.
+- `uv run pytest -q` â†’ **103 passed**.
+- `uv run ruff check app tests` â†’ clean; compileall clean.
 - Read-only live smoke test: `total=65`, counts `{active:57,dry:1,sold:6,dead:1}` matched Node
   exactly; buffalo id 2 serialized with the same fields and timestamps as Node, including
   `createdAt=2026-10-28T06:49:55.000Z` and `updatedAt=2026-10-28T07:03:25.000Z`.
@@ -242,17 +243,17 @@ Verification:
 
 Created:
 
-- `app/schemas/production.py` — Zod-compatible single/bulk payload validation, 2-decimal
+- `app/schemas/production.py` â€” Zod-compatible single/bulk payload validation, 2-decimal
   serializers, production detail include (`buffalo` + `recorder`), date/litres helpers.
-- `app/repositories/production_repository.py` — duplicate lookup, daily list/details, buffalo
+- `app/repositories/production_repository.py` â€” duplicate lookup, daily list/details, buffalo
   history, grouped range totals, create/flush/commit/rollback.
-- `app/repositories/buffalo_repository.py` — added `list_active()` sorted by `tag_no`.
-- `app/services/production_service.py` — grid/list/summary/history and single/bulk writes,
+- `app/repositories/buffalo_repository.py` â€” added `list_active()` sorted by `tag_no`.
+- `app/services/production_service.py` â€” grid/list/summary/history and single/bulk writes,
   future/operator date rules, active-buffalo guard, duplicate `overwrite`, atomic bulk rollback.
-- `app/routers/production.py` — `/api/v1/production/*` routes for admin + operator, query
+- `app/routers/production.py` â€” `/api/v1/production/*` routes for admin + operator, query
   validation, single-vs-bulk dispatch, 201 responses.
-- `app/core/dependencies.py`, `app/main.py` — production repository/service wiring and router.
-- `tests/test_phase5.py` — schemas, service, API, transaction rollback, validation, and query tests.
+- `app/core/dependencies.py`, `app/main.py` â€” production repository/service wiring and router.
+- `tests/test_production.py` â€” schemas, service, API, transaction rollback, validation, and query tests.
 
 Also corrected Phase 3/4 validation messages to the actual Node Zod 4 runtime messages. Zod 4
 ignores `required_error`/`errorMap`; missing values and enum failures now use
@@ -275,10 +276,10 @@ Contract details preserved:
 
 Verification:
 
-- `uv run pytest -q` → **125 passed**, 8 subtests passed.
-- `uv run ruff check app tests` → clean; compileall clean.
-- Read-only live smoke: grid `2025-01-15` → 57 active, herd `16.50/15.00/31.50`, buffalo 63 row
-  `6.50/5.50/12.00`; summary `2025-01-01..2025-01-20` → 1 day, total `31.50`; buffalo 63 history
+- `uv run pytest -q` â†’ **125 passed**, 8 subtests passed.
+- `uv run ruff check app tests` â†’ clean; compileall clean.
+- Read-only live smoke: grid `2025-01-15` â†’ 57 active, herd `16.50/15.00/31.50`, buffalo 63 row
+  `6.50/5.50/12.00`; summary `2025-01-01..2025-01-20` â†’ 1 day, total `31.50`; buffalo 63 history
   total `12.00`.
 - Read-only API smoke through ASGI with live DB: grid/summary/history 200; missing `to` and invalid
   body 400 with expected envelopes.
@@ -300,7 +301,7 @@ The custom `AppError` hierarchy (`BadRequestError`, `UnauthorizedError`, `Forbid
   `"{path}: {message}"`.
 - Tests were migrated from class-based exception assertions to `HTTPException` and
   `detail["code"]`. This refactor made no API contract change.
-- After the refactor: `uv run pytest -q` → **125 passed**, 8 subtests passed; ruff clean.
+- After the refactor: `uv run pytest -q` â†’ **125 passed**, 8 subtests passed; ruff clean.
 
 ---
 
@@ -308,21 +309,21 @@ The custom `AppError` hierarchy (`BadRequestError`, `UnauthorizedError`, `Forbid
 
 Created:
 
-- `app/schemas/wastage.py` — Zod-compatible wastage payload validation, query model, 2-decimal
+- `app/schemas/wastage.py` â€” Zod-compatible wastage payload validation, query model, 2-decimal
   wastage serializer, and recorder include.
-- `app/repositories/stock_repository.py` — before/current production/sales/wastage sums and future
+- `app/repositories/stock_repository.py` â€” before/current production/sales/wastage sums and future
   active-date discovery, all excluding soft-deleted rows.
-- `app/repositories/wastage_repository.py` — create, filtered list/count with recorder join,
+- `app/repositories/wastage_repository.py` â€” create, filtered list/count with recorder join,
   DESC ordering, pagination, flush/commit/rollback.
-- `app/services/stock_service.py` — derived opening/closing stock, stock history, and availability
+- `app/services/stock_service.py` â€” derived opening/closing stock, stock history, and availability
   checks against the requested day and every later active date.
-- `app/services/wastage_service.py` — date permissions, stock guard, atomic insert, remaining-stock
+- `app/services/wastage_service.py` â€” date permissions, stock guard, atomic insert, remaining-stock
   response, filtered listing, and range validation.
-- `app/routers/stock.py`, `app/routers/wastage.py` — `/api/v1/stock` and `/api/v1/wastage` routes
+- `app/routers/stock.py`, `app/routers/wastage.py` â€” `/api/v1/stock` and `/api/v1/wastage` routes
   for admin + operator, with Node-compatible query/body validation.
-- `app/core/dependencies.py`, `app/main.py`, `app/core/errors.py` — repository/service wiring,
+- `app/core/dependencies.py`, `app/main.py`, `app/core/errors.py` â€” repository/service wiring,
   router registration, and wastage field validation labels.
-- `tests/test_phase6.py` — schemas, stock calculations/history, current/future stock guards,
+- `tests/test_stock_and_wastage.py` â€” schemas, stock calculations/history, current/future stock guards,
   wastage permissions/transactions/listing, API responses, and validation messages.
 
 Contract details preserved:
@@ -351,8 +352,8 @@ Contract details preserved:
 
 Verification:
 
-- `uv run pytest -q` → **139 passed**, 25 subtests passed.
-- `uv run ruff check app tests` → clean; compileall clean.
+- `uv run pytest -q` â†’ **139 passed**, 25 subtests passed.
+- `uv run ruff check app tests` â†’ clean; compileall clean.
 - Read-only live service smoke matched Node exactly: `2026-10-29` stock
   `689.04/0.00/0.00/0.00/689.04`; history `2026-10-27..29` matched all 15 values; wastage total `5`
   with recorder joins.
@@ -366,22 +367,22 @@ Verification:
 
 Created:
 
-- `app/schemas/customer.py` — Zod-compatible create/update validation, query model, and customer
+- `app/schemas/customer.py` â€” Zod-compatible create/update validation, query model, and customer
   serialization with 2-decimal rates and camel-case timestamps.
-- `app/schemas/sale.py` — create/update validation, query model, sale/customer/recorder
+- `app/schemas/sale.py` â€” create/update validation, query model, sale/customer/recorder
   serialization for list (no customer address) and detail (customer address included).
-- `app/repositories/customer_repository.py` — non-deleted lookup, filtered list/count ordered by
+- `app/repositories/customer_repository.py` â€” non-deleted lookup, filtered list/count ordered by
   name, create, and sales/invoice financial aggregation.
-- `app/repositories/sale_repository.py` — non-deleted lookup with customer/recorder joins, filtered
+- `app/repositories/sale_repository.py` â€” non-deleted lookup with customer/recorder joins, filtered
   list/count, create, flush/commit/rollback.
-- `app/services/customer_service.py` — list/get/create/update/balance, normalization, 404 messages.
-- `app/services/sale_service.py` — date permissions, active-customer guard, captured/default rate,
+- `app/services/customer_service.py` â€” list/get/create/update/balance, normalization, 404 messages.
+- `app/services/sale_service.py` â€” date permissions, active-customer guard, captured/default rate,
   amount calculation, stock assertion, atomic create, filtered listing, and stock-aware update.
-- `app/routers/customers.py`, `app/routers/sales.py` — `/api/v1/customers/*` and `/api/v1/sales/*`
+- `app/routers/customers.py`, `app/routers/sales.py` â€” `/api/v1/customers/*` and `/api/v1/sales/*`
   for admin + operator, with Node-compatible query/body validation.
-- `app/core/dependencies.py`, `app/main.py`, `app/core/errors.py` — repository/service wiring,
+- `app/core/dependencies.py`, `app/main.py`, `app/core/errors.py` â€” repository/service wiring,
   router registration, and numeric/date validation field mappings.
-- `tests/test_phase7.py` — schemas, customer listing/create/update/balance, sale create/update/
+- `tests/test_customers_and_sales.py` â€” schemas, customer listing/create/update/balance, sale create/update/
   listing, permissions, inactive customer, stock guards, API envelopes, and validation messages.
 
 Contract details preserved:
@@ -410,8 +411,8 @@ Contract details preserved:
 
 Verification:
 
-- `uv run pytest -q` → **154 passed**, 48 subtests passed.
-- `uv run ruff check app tests` → clean; compileall clean.
+- `uv run pytest -q` â†’ **154 passed**, 48 subtests passed.
+- `uv run ruff check app tests` â†’ clean; compileall clean.
 - Read-only live service/Node comparison matched exactly: customer page 1 (`total=69`), customer 40
   balance, sales page 1 (`total=64`), and sale 67 detail including customer address and recorder.
 - No live create/update/delete was executed.
@@ -422,17 +423,17 @@ Verification:
 
 Created:
 
-- `app/models/invoice.py`, `app/models/invoice_sale.py` — invoice and link models matching the live
+- `app/models/invoice.py`, `app/models/invoice_sale.py` â€” invoice and link models matching the live
   schema (unique `invoice_no`, unique `sale_id`, composite `(invoice_id, sale_id)`).
-- `app/schemas/invoice.py` — create/payment validation, query model, and invoice/customer/sale
+- `app/schemas/invoice.py` â€” create/payment validation, query model, and invoice/customer/sale
   serialization with `balance`.
-- `app/repositories/invoice_repository.py` — detail lookup with joins, filtered list/count,
+- `app/repositories/invoice_repository.py` â€” detail lookup with joins, filtered list/count,
   invoice-number lookup, link creation, and linked-sale payment updates.
-- `app/services/invoice_service.py` — number generation, explicit/period sale selection, duplicate
+- `app/services/invoice_service.py` â€” number generation, explicit/period sale selection, duplicate
   and invalid-sale guards, payment tracking, and PDF generation.
-- `app/utils/pdf.py` — ReportLab invoice PDF (header, customer card, line items, totals).
-- `app/routers/invoices.py` — `/api/v1/invoices*` for admin + operator.
-- `tests/test_phase8.py` — schemas, service flows, API envelopes, PDF headers, and query messages.
+- `app/utils/pdf.py` â€” ReportLab invoice PDF (header, customer card, line items, totals).
+- `app/routers/invoices.py` â€” `/api/v1/invoices*` for admin + operator.
+- `tests/test_invoices.py` â€” schemas, service flows, API envelopes, PDF headers, and query messages.
 
 Contract details preserved:
 
@@ -447,8 +448,8 @@ Contract details preserved:
 
 Verification:
 
-- `uv run pytest -q` → **163 passed**, 68 subtests passed.
-- `uv run ruff check app tests` → clean.
+- `uv run pytest -q` â†’ **163 passed**, 68 subtests passed.
+- `uv run ruff check app tests` â†’ clean.
 - Read-only live smoke: list/detail/PDF for existing invoices matched Node byte-comparable values.
 
 ---
@@ -457,22 +458,22 @@ Verification:
 
 Created:
 
-- `app/schemas/expense_category.py` — create validation (trim, lowercase, 2–80 chars) and category
+- `app/schemas/expense_category.py` â€” create validation (trim, lowercase, 2â€“80 chars) and category
   serialization with camel-case timestamps.
-- `app/schemas/expense.py` — create/update validation (`UNSET` sentinel so `note: null` clears),
+- `app/schemas/expense.py` â€” create/update validation (`UNSET` sentinel so `note: null` clears),
   query model, and expense serialization with `category{id,name}` and `recorder{...}`.
-- `app/repositories/expense_category_repository.py` — active list ordered by name, id/name lookup,
+- `app/repositories/expense_category_repository.py` â€” active list ordered by name, id/name lookup,
   create.
-- `app/repositories/expense_repository.py` — detail lookup with category/recorder joins, filtered
+- `app/repositories/expense_repository.py` â€” detail lookup with category/recorder joins, filtered
   list/count plus summed amount, create, attribute updates.
-- `app/services/expense_category_service.py` — list and create with `DUPLICATE_CATEGORY` (409).
-- `app/services/expense_service.py` — list/get/create/update with category existence checks,
+- `app/services/expense_category_service.py` â€” list and create with `DUPLICATE_CATEGORY` (409).
+- `app/services/expense_service.py` â€” list/get/create/update with category existence checks,
   2-decimal amounts, `note` trimming/null handling, and `total_pages`/`total_expense_amount`.
-- `app/routers/expenses.py` — admin-only `/api/v1/expenses*` and the `/api/v1/expense-categories`
+- `app/routers/expenses.py` â€” admin-only `/api/v1/expenses*` and the `/api/v1/expense-categories`
   alias, with Node-compatible query/body validation.
-- `app/core/dependencies.py`, `app/main.py`, `app/core/errors.py` — repository/service wiring,
+- `app/core/dependencies.py`, `app/main.py`, `app/core/errors.py` â€” repository/service wiring,
   router registration, and expense field validation mappings.
-- `tests/test_phase9.py` — schemas, category/expense services, admin-only enforcement, envelopes,
+- `tests/test_expenses.py` â€” schemas, category/expense services, admin-only enforcement, envelopes,
   and validation messages.
 
 Contract details preserved:
@@ -496,9 +497,9 @@ Contract details preserved:
 
 Verification:
 
-- `uv run pytest -q` → **176 passed**, 88 subtests passed (163 before this phase; 13 new).
-- `uv run ruff check app tests` → `All checks passed!`
-- `uv run python -m compileall -q app tests` → clean.
+- `uv run pytest -q` â†’ **176 passed**, 88 subtests passed (163 before this phase; 13 new).
+- `uv run ruff check app tests` â†’ `All checks passed!`
+- `uv run python -m compileall -q app tests` â†’ clean.
 - No live write path was exercised; the live expense list/get endpoints have not been compared against
   Node yet.
 
@@ -508,17 +509,17 @@ Verification:
 
 Created:
 
-- `app/schemas/report.py` — profit/production/dashboard query models plus shared date and month
+- `app/schemas/report.py` â€” profit/production/dashboard query models plus shared date and month
   patterns.
-- `app/repositories/report_repository.py` — sales rows in range, expense rows with category names,
+- `app/repositories/report_repository.py` â€” sales rows in range, expense rows with category names,
   daily sales totals, sales/expense amount totals, and per-session production totals for a date.
-- `app/services/report_service.py` — profit report, production report delegation, dashboard
+- `app/services/report_service.py` â€” profit report, production report delegation, dashboard
   snapshot, and date-range resolution.
-- `app/routers/reports.py` — `/api/v1/reports/profit` (admin), `/reports/production` and
+- `app/routers/reports.py` â€” `/api/v1/reports/profit` (admin), `/reports/production` and
   `/reports/dashboard` (admin + operator).
-- `app/core/dependencies.py`, `app/main.py` — report repository/service wiring and router
+- `app/core/dependencies.py`, `app/main.py` â€” report repository/service wiring and router
   registration.
-- `tests/test_phase10.py` — date-range rules, profit aggregation, production delegation, dashboard
+- `tests/test_reports.py` â€” date-range rules, profit aggregation, production delegation, dashboard
   role behaviour, API envelopes, and validation messages.
 
 Contract details preserved:
@@ -532,7 +533,7 @@ Contract details preserved:
   carry `total_amount` plus a one-decimal `percentage` (uncategorized expenses group under
   `uncategorized`).
 - Production report reuses the Phase 5 summary; missing `from`/`to` returns an empty summary rather
-  than raising (Node's schema allows omission but its query is undefined there — documented
+  than raising (Node's schema allows omission but its query is undefined there â€” documented
   deviation).
 - Dashboard returns `{date,buffaloes,production,stock,sales,financials}`; `financials` is `null` for
   operators, and admin financials cover today plus month-to-date from the 1st of the month.
@@ -541,9 +542,9 @@ Contract details preserved:
 
 Verification:
 
-- `uv run pytest -q` → **197 passed**, 94 subtests passed (176 before this phase; 21 new).
-- `uv run ruff check app tests` → `All checks passed!`
-- `uv run python -m compileall -q app tests` → clean.
+- `uv run pytest -q` â†’ **197 passed**, 94 subtests passed (176 before this phase; 21 new).
+- `uv run ruff check app tests` â†’ `All checks passed!`
+- `uv run python -m compileall -q app tests` â†’ clean.
 - No live endpoint comparison against Node for reports yet.
 
 ---
@@ -552,16 +553,16 @@ Verification:
 
 Created:
 
-- `app/seeders/store.py` — `SeedStore`, the small persistence surface (`find`, `find_all`, `create`,
+- `app/seeders/store.py` â€” `SeedStore`, the small persistence surface (`find`, `find_all`, `create`,
   `flush`, `commit`, `rollback`) used by the seeders. Lookups ignore `is_deleted`, matching Node's
   `findOrCreate` on the natural key.
-- `app/seeders/base_seed.py` — idempotent base seed: the six PRD expense categories and the initial
+- `app/seeders/base_seed.py` â€” idempotent base seed: the six PRD expense categories and the initial
   admin user from `ADMIN_*` settings (bcrypt cost 10).
-- `app/seeders/fake_indian_data.py` — Faker (`en_IN`) fake farm data: 3 operators, 12 buffaloes with
+- `app/seeders/fake_indian_data.py` â€” Faker (`en_IN`) fake farm data: 3 operators, 12 buffaloes with
   Murrah/Surti/... breeds and 9 active statuses, 8 customers (1 inactive), 6 days x 2 sessions of
   production for active buffaloes, one spilled wastage, 4 days of sales for the first 4 active
   customers, one partially paid invoice with sale links, and one expense per category.
-- `tests/test_phase11.py` — runs both seeders against an in-memory store (no database contact),
+- `tests/test_seeders.py` â€” runs both seeders against an in-memory store (no database contact),
   covering row counts, values, invoice totals/links, and repeat-run behaviour.
 
 Contract details preserved:
@@ -576,7 +577,7 @@ Contract details preserved:
   rates step from 60.00 to 70.00 and the 8th customer is inactive.
 - Invoice number is `INV-YYYYMM-0001`, status `partial`, paid amount is half of the linked sales.
 - Because sale and expense natural keys include random amounts, re-running adds new sale/expense
-  rows while everything else stays idempotent — the same behaviour as Node.
+  rows while everything else stays idempotent â€” the same behaviour as Node.
 - Only one intentional deviation: business dates come from `Asia/Kolkata` (`get_business_date`)
   rather than the Node script's UTC `toISOString()`.
 
@@ -584,15 +585,15 @@ Faker compatibility:
 
 - The seeder accepts either the modern Faker API (`person.full_name()`, `phone_number()`) or the
   legacy one (`name()`, `phone()`, `address()`), because the environment's installed Faker does not
-  expose `person` even though `uv.lock` pins 40.43.0. `tests/test_phase11.py` covers both shapes.
+  expose `person` even though `uv.lock` pins 40.43.0. `tests/test_seeders.py` covers both shapes.
 - `app/seeders/__init__.py` no longer re-exports the modules, which removes the
   `runpy` "found in sys.modules" warning when running the seeders with `python -m`.
 
 Verification:
 
-- `uv run pytest -q` → **210 passed**, 94 subtests passed (197 before this phase; 13 new).
-- `uv run ruff check app tests` → `All checks passed!`
-- `uv run python -m compileall -q app tests` → clean.
+- `uv run pytest -q` â†’ **210 passed**, 94 subtests passed (197 before this phase; 13 new).
+- `uv run ruff check app tests` â†’ `All checks passed!`
+- `uv run python -m compileall -q app tests` â†’ clean.
 - Live attempts (user-run): `python -m app.seeders.base_seed` connected read/write and reported no
   changes (all six categories and the admin email already existed). `python -m
   app.seeders.fake_indian_data` failed on the Faker `person` provider before any commit; the seeder
@@ -608,7 +609,7 @@ scheme and Swagger UI had no **Authorize** button. It now also declares
 `Security(HTTPBearer(auto_error=False, scheme_name="BearerAuth"))`, which adds the http/bearer scheme
 to the OpenAPI document and a padlock to every protected operation without changing any error
 behaviour (the header checks still run first, so the Node 401 messages are unchanged).
-`tests/test_phase1.py::test_openapi_documents_bearer_auth` asserts the scheme exists, that
+`tests/test_health_and_docs.py::test_openapi_documents_bearer_auth` asserts the scheme exists, that
 `GET /api/v1/customers` requires it, and that `/health` stays public.
 
 ---
@@ -636,7 +637,7 @@ behaviour (the header checks still run first, so the Node 401 messages are uncha
 1. Concurrency: preserve Node's unlocked read-then-write, or add MySQL `GET_LOCK` serialization.
 2. Soft-deleted unique rows: restore/overwrite on re-entry, or return conflict.
 3. Payments: preserve Node overpayment + sale status behavior, or align to ADR-004.
-4. Operator rights: allow sales/invoice edits (Node) or restrict to create/view/print (PRD §4).
+4. Operator rights: allow sales/invoice edits (Node) or restrict to create/view/print (PRD Â§4).
 5. Scope: include password reset, customer sales history, CSV/PDF report exports (missing in Node)?
 6. [x] JWT confirmed as `{id,email,username,role}` plus `iat`/`exp` (no `sub`).
 7. [x] Read-only live MySQL schema inspection approved and completed.
@@ -665,20 +666,20 @@ behaviour (the header checks still run first, so the Node 401 messages are uncha
 
 ---
 
-## Phase 12 — parity audit and handoff
+## Phase 12 â€” parity audit and handoff
 
 Created:
 
-- `HANDOFF.md` — how to run, verify, and seed the backend; the full endpoint/role matrix; deliberate
+- `HANDOFF.md` â€” how to run, verify, and seed the backend; the full endpoint/role matrix; deliberate
   deviations from Node; open decisions; and what was not done.
-- `API_PARITY.md` header now states that all 51 audited endpoints are implemented (Phases 1–10).
+- `API_PARITY.md` header now states that all 51 audited endpoints are implemented (Phases 1â€“10).
 
 Audit result: every route in `backend/src/routes` has a Python counterpart with the same path, verb,
 role guard, envelope, and error codes. Test coverage per phase:
 
 | Phase | Tests added |
 | --- | --- |
-| 1–3 | 72 |
+| 1â€“3 | 72 |
 | 4 | 31 |
 | 5 | 22 |
 | 6 | 14 |
@@ -690,78 +691,79 @@ role guard, envelope, and error codes. Test coverage per phase:
 
 Final state: **210 passed**, 94 subtests, `ruff` clean, `compileall` clean.
 
-## Phase 13 — feature fixes (operator deletion, report PDFs, invoice PDF)
+## Phase 13 â€” feature fixes (operator deletion, report PDFs, invoice PDF)
 
 Plan and progress: `../docs/FEATURE_FIX_PLAN.md`, `../docs/FEATURE_FIX_PROGRESS.md`.
 
 Created/changed:
 
-- `app/services/user_service.py` — `delete_user`: soft deletes operator accounts only
+- `app/services/user_service.py` â€” `delete_user`: soft deletes operator accounts only
   (`is_deleted=true`, `is_active=false`), 400 for self-deletion, 400 for admin targets, 404 for
   missing/non-numeric/already-deleted ids.
-- `app/routers/users.py` — `DELETE /users/{user_id}` behind the router's `require_admin` guard,
+- `app/routers/users.py` â€” `DELETE /users/{user_id}` behind the router's `require_admin` guard,
   registered before the generic `DELETE /{resource}/{id}` route.
-- `app/schemas/report.py` — `REPORT_TYPES`, `REPORT_TYPE_LABELS`, `ReportExportQuery`.
-- `app/utils/report_pdf.py` (new) — ReportLab platypus report builder: KPI strip, executive
+- `app/schemas/report.py` â€” `REPORT_TYPES`, `REPORT_TYPE_LABELS`, `ReportExportQuery`.
+- `app/utils/report_pdf.py` (new) â€” ReportLab platypus report builder: KPI strip, executive
   summary, A4 tables with repeating headers, vector charts (`reportlab.graphics`), 12-bar bucket
   cap, "Page X of Y" footer and an explicit no-data block.
-- `app/services/report_service.py` — `generate_report_pdf` reusing the JSON report methods so the
+- `app/services/report_service.py` â€” `generate_report_pdf` reusing the JSON report methods so the
   PDF and API figures cannot diverge; `dairy-<type>-report-<range>.pdf` filenames.
-- `app/routers/reports.py` — `GET /reports/pdf` with `type=profit|production|dashboard`, admin-only
+- `app/routers/reports.py` â€” `GET /reports/pdf` with `type=profit|production|dashboard`, admin-only
   profit, `application/pdf` + `attachment` + `no-store`, project 400 validation envelopes.
-- `app/utils/pdf.py` — invoice rewritten on platypus: no invented business/tax details, wrapped
+- `app/utils/pdf.py` â€” invoice rewritten on platypus: no invented business/tax details, wrapped
   descriptions, repeating table header, right-aligned totals block with balance due, payment status,
   page numbers, `Decimal`/`ROUND_HALF_UP` money.
-- `tests/test_phase3.py`, `tests/test_phase8.py`, `tests/test_phase10.py` — new regression tests.
+- `tests/test_auth_and_users.py`, `tests/test_invoices.py`, `tests/test_reports.py` â€” new regression tests.
 
 Python-only additions (Node has neither): `DELETE /users/:id`, `GET /reports/pdf`. Documented in
 `API_PARITY.md`. No schema, dependency or lockfile change.
 
 Verification: **357 passed**, 150 subtests, `ruff` clean (2026-10-30 full-suite run by the user).
 
-## Phase 14 — security hardening and password reset
+## Phase 14 â€” security hardening and password reset
 
 Changed:
 
-- `app/core/middleware.py` — request logging redacts the values of `token`, `secret`,
+- `app/core/middleware.py` â€” request logging redacts the values of `token`, `secret`,
   `password`, `api_key`/`apikey` query parameters; the 413 body-limit response uses the project
   envelope with `PAYLOAD_TOO_LARGE`.
-- `app/core/errors.py` — 413 maps to `PAYLOAD_TOO_LARGE`, 429 to `RATE_LIMITED`.
-- `app/core/config.py` — production-only guard rejects the shipped `JWT_SECRET`/admin password,
+- `app/core/errors.py` â€” 413 maps to `PAYLOAD_TOO_LARGE`, 429 to `RATE_LIMITED`.
+- `app/core/config.py` â€” production-only guard rejects the shipped `JWT_SECRET`/admin password,
   short secrets, and a missing or identical `CUSTOMER_JWT_SECRET`; SMTP settings, `FRONTEND_URL`
   and the portal cookie names added.
-- `app/main.py` — the wildcard CORS regex is limited to `NODE_ENV=development`; other environments
+- `app/main.py` â€” the wildcard CORS regex is limited to `NODE_ENV=development`; other environments
   use `CORS_ORIGINS` only.
 - `app/models/password_reset_token.py`, `app/repositories/password_reset_repository.py`,
   `app/services/password_reset_service.py`, `app/services/email_service.py`,
-  `app/schemas/password_reset.py` (all new) — single-use staff and customer reset links, SHA-256
+  `app/schemas/password_reset.py` (all new) â€” single-use staff and customer reset links, SHA-256
   at rest, scope binding, expiry, generic response, confirmation email.
-- `app/routers/auth.py`, `app/routers/customer_auth.py` — `POST /forgot-password`,
+- `app/routers/auth.py`, `app/routers/customer_auth.py` â€” `POST /forgot-password`,
   `GET /reset-password/validate`, `POST /reset-password` for both audiences.
-- `alembic/versions/0003_password_reset.py` — `password_reset_tokens` table.
+- `alembic/versions/0003_password_reset.py` â€” `password_reset_tokens` table.
 - `frontend/src/pages/ResetPassword/`, `frontend/src/pages/customer/Customer{Reset,Forgot}Password.jsx`,
-  `frontend/src/components/PasswordResetForms.jsx` (new) — forgot/reset pages for staff and portal,
+  `frontend/src/components/PasswordResetForms.jsx` (new) â€” forgot/reset pages for staff and portal,
   linked from the login pages.
-- `.env.example` — SMTP, `FRONTEND_URL` and reset-related comments.
-- `tests/test_password_reset.py` (new, 15 tests) and `tests/test_phase1.py` (413/CORS).
+- `.env.example` â€” SMTP, `FRONTEND_URL` and reset-related comments.
+- `tests/test_password_reset.py` (new, 15 tests) and `tests/test_middleware.py`
+  (413/CORS; chunked bodies added in Phase 16).
 
-## Phase 15 — session revocation and background email
+## Phase 15 â€” session revocation and background email
 
 Changed:
 
-- `app/models/user.py`, `app/models/customer_portal_account.py` — `token_version` (int, default 0).
-- `alembic/versions/0004_token_version.py` — adds the column to both tables; applied to the live
-  DB on 2026-10-31 (`alembic current` → `0004_token_version`).
-- `app/core/security.py` — `ver` claim in staff and customer access/refresh tokens.
-- `app/services/auth_service.py`, `app/services/customer_portal_auth_service.py` — login signs the
+- `app/models/user.py`, `app/models/customer_portal_account.py` â€” `token_version` (int, default 0).
+- `alembic/versions/0004_token_version.py` â€” adds the column to both tables; applied to the live
+  DB on 2026-10-31 (`alembic current` â†’ `0004_token_version`).
+- `app/core/security.py` â€” `ver` claim in staff and customer access/refresh tokens.
+- `app/services/auth_service.py`, `app/services/customer_portal_auth_service.py` â€” login signs the
   current version; refresh rejects a mismatch with `401` "Session has expired; sign in again".
-- `app/core/dependencies.py` — the bearer guards enforce the same check, so an access token minted
+- `app/core/dependencies.py` â€” the bearer guards enforce the same check, so an access token minted
   before a reset stops working immediately.
-- `app/services/password_reset_service.py` — reset bumps `token_version` in the same commit as the
+- `app/services/password_reset_service.py` â€” reset bumps `token_version` in the same commit as the
   password and hash consume; portal deactivate/reactivate also bump it.
-- `app/utils/tasks.py` (new) — `deliver_or_queue`; routers now pass `BackgroundTasks` so reset and
+- `app/utils/tasks.py` (new) â€” `deliver_or_queue`; routers now pass `BackgroundTasks` so reset and
   activation emails are sent after the response instead of inside it.
-- `tests/test_auth_refresh.py` (access/refresh revocation), `tests/test_customer_portal_auth.py`
+- `tests/test_auth_sessions.py` (access/refresh revocation), `tests/test_customer_portal_auth.py`
   (customer refresh revocation), `tests/test_password_reset.py` (deferred email + version bump).
 
 Verification (2026-10-31, observed):
@@ -772,15 +774,49 @@ uv run alembic upgrade head      # 0003_password_reset -> 0004_token_version
 uv run pytest -q                 # 378 passed, 150 subtests
 ```
 
+## Phase 16 â€” post-audit fixes (2026-11-03)
+
+Audit findings fixed:
+
+- `app/services/user_service.py` â€” an administrative password change now bumps
+  `token_version`, so the target's existing access/refresh tokens stop working; a
+  deactivation/reactivation also bumps it (deactivation alone left old tokens usable
+  again after reactivation); soft delete bumps it as defence in depth.
+- `app/core/middleware.py` â€” the 1 MB body cap now also covers chunked requests with
+  no `Content-Length` (or a lying one): the stream is buffered up to the limit and
+  replayed to the app, returning the normal `PAYLOAD_TOO_LARGE` envelope on overflow.
+- `app/services/email_service.py` â€” with SMTP unconfigured, the reset/activation link
+  is echoed in the log only outside production; production logs name the failure
+  without the live token.
+- `app/core/config.py` â€” the production guard now rejects `FRONTEND_URL` values that
+  are not a public `https` origin, since emailed links carry live reset tokens.
+- `frontend/src/components/PasswordResetForms.jsx`, `frontend/src/pages/ResetPassword/`,
+  `frontend/src/pages/customer/CustomerResetPassword.jsx` â€” a successful reset now
+  clears the local session and refresh cookie, so the user reaches the sign-in form
+  instead of bouncing through "session expired" (the API bumped `token_version`).
+- New tests: `tests/test_config.py`, `tests/test_email_service.py`, chunked-body cases
+  in `tests/test_middleware.py`, and staff password/status revocation cases in
+  `tests/test_auth_and_users.py`.
+
+Verification (2026-11-03, observed):
+
+```powershell
+uv run ruff check app tests      # All checks passed
+uv run python -m compileall -q app tests
+uv run pytest -q                 # 388 passed, 150 subtests
+npm run lint                     # clean
+npm run build                    # built (chunk-size warning only)
+```
+
 ## Next step
 
 1. Manual UAT and the clean-install/upgrade rehearsal described in
-   `../docs/CUSTOMER_PORTAL_UAT_RELEASE.md` §4 (still N/R).
+   `../docs/CUSTOMER_PORTAL_UAT_RELEASE.md` Â§4 (still N/R).
 2. Optional: run the fake seeder against MySQL (`uv run python -m app.seeders.fake_indian_data`) to
    populate demo data; it writes rows and needs approval.
-3. Optional: live side-by-side comparison of the Phase 9–11 endpoints and reports against Node.
-4. Outstanding product decisions are listed in `HANDOFF.md` §6; deliberately not implemented:
+3. Optional: live side-by-side comparison of the Phase 9â€“11 endpoints and reports against Node.
+4. Outstanding product decisions are listed in `HANDOFF.md` Â§6; deliberately not implemented:
    rate limiting and refresh-token rotation with server-side session records.
 
-Migrations `0002`–`0004` are now applied to the development database; any further live DDL, a
+Migrations `0002`â€“`0004` are now applied to the development database; any further live DDL, a
 production migration, or a live seed still needs separate approval.

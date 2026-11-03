@@ -30,6 +30,17 @@ def timestamp_columns() -> tuple[sa.Column, sa.Column]:
 
 
 def upgrade() -> None:
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table('customers'):
+        import importlib.util
+        from pathlib import Path
+        bf = Path(__file__).parent / '0001_baseline_existing_schema.py'
+        if bf.exists():
+            spec = importlib.util.spec_from_file_location('baseline_0001', bf)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            mod.upgrade()
     op.create_table(
         "customer_portal_accounts",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),

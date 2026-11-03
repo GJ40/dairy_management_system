@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.core.dependencies import get_user_repository
 from app.core.security import (
     create_access_token,
+    create_refresh_token,
     decode_access_token,
     hash_password,
     verify_password,
@@ -382,6 +383,40 @@ class UserServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["email"], "operator2@example.com")
         self.assertEqual(result["role"], "admin")
         self.assertTrue(verify_password("newpassword", self.operator.password_hash))
+        self.assertEqual(self.operator.token_version, 1)
+
+    def _refresh_token_for(self, user: User) -> str:
+        return create_refresh_token(
+            user_id=user.id,
+            email=user.email,
+            username=user.username,
+            role=user.role,
+            token_version=user.token_version or 0,
+        )
+
+    async def test_admin_password_change_revokes_existing_refresh_token(self) -> None:
+        token = self._refresh_token_for(self.operator)
+
+        await self.service.update_user(
+            str(self.operator.id),
+            UpdateUserRequest(password="brand-new-password"),
+        )
+
+        with self.assertRaisesRegex(HTTPException, "Session has expired"):
+            await AuthService(self.repository).refresh(token)
+
+    async def test_update_without_password_keeps_sessions(self) -> None:
+        self.operator.token_version = 0
+        token = self._refresh_token_for(self.operator)
+
+        await self.service.update_user(
+            str(self.operator.id),
+            UpdateUserRequest(full_name="Renamed Operator"),
+        )
+
+        self.assertEqual(self.operator.token_version, 0)
+        refreshed = await AuthService(self.repository).refresh(token)
+        self.assertEqual(refreshed["user"]["email"], self.operator.email)
 
     async def test_update_duplicate_username(self) -> None:
         payload = UpdateUserRequest(username="admin")
@@ -404,10 +439,31 @@ class UserServiceTests(unittest.IsolatedAsyncioTestCase):
             await self.service.update_user("999", UpdateUserRequest(full_name="X"))
 
     async def test_update_status(self) -> None:
+        self.operator.token_version = 0
+        token = self._refresh_token_for(self.operator)
+
         result = await self.service.update_status(str(self.operator.id), False, self.admin.id)
         self.assertFalse(result["is_active"])
+        self.assertEqual(self.operator.token_version, 1)
+
         result = await self.service.update_status(str(self.operator.id), True, self.admin.id)
         self.assertTrue(result["is_active"])
+        self.assertEqual(self.operator.token_version, 2)
+
+        # Deactivation alone would have hidden the token; after reactivation
+        # only the bumped version keeps it dead.
+        with self.assertRaisesRegex(HTTPException, "Session has expired"):
+            await AuthService(self.repository).refresh(token)
+
+    async def test_update_status_without_change_keeps_sessions(self) -> None:
+        self.operator.token_version = 0
+        token = self._refresh_token_for(self.operator)
+
+        await self.service.update_status(str(self.operator.id), True, self.admin.id)
+
+        self.assertEqual(self.operator.token_version, 0)
+        refreshed = await AuthService(self.repository).refresh(token)
+        self.assertEqual(refreshed["user"]["email"], self.operator.email)
 
     async def test_cannot_deactivate_self(self) -> None:
         with self.assertRaisesRegex(
@@ -427,6 +483,7 @@ class UserServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("deleted_at", result)
         self.assertTrue(self.operator.is_deleted)
         self.assertFalse(self.operator.is_active)
+        self.assertEqual(self.operator.token_version, 1)
         self.assertGreater(self.repository.commits, 0)
         self.assertEqual(self.repository.rollbacks, 0)
 

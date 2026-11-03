@@ -30,7 +30,7 @@ from tests.test_customer_portal_auth import (
     make_account,
     make_customer,
 )
-from tests.test_phase7 import make_user
+from tests.test_customers_and_sales import make_user
 
 BASE = datetime(2026, 10, 30, 9, 0, 0)
 

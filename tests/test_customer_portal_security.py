@@ -20,6 +20,7 @@ from app.core.security import create_access_token, create_customer_access_token
 from app.db.session import get_db
 from app.main import app
 from app.utils.time import business_now
+from tests.test_auth_and_users import FakeUserRepository
 from tests.test_customer_portal_auth import (
     CUSTOMER_COOKIE,
     FakeCustomerRepository,
@@ -38,8 +39,7 @@ from tests.test_customer_portal_queries import (
     make_message,
     make_query,
 )
-from tests.test_phase3 import FakeUserRepository
-from tests.test_phase7 import make_user
+from tests.test_customers_and_sales import make_user
 
 
 class SecurityProbeTests(unittest.IsolatedAsyncioTestCase):
