@@ -3,8 +3,11 @@ import {
   resetCustomerPassword,
   validateCustomerResetToken,
 } from '../../api/customerAuth';
+import { useCustomerAuth } from '../../hooks/useCustomerAuth';
 
 export function CustomerResetPassword() {
+  const { logout } = useCustomerAuth();
+
   return (
     <PasswordResetConfirm
       audience="Customer portal"
@@ -12,6 +15,7 @@ export function CustomerResetPassword() {
       resetPassword={resetCustomerPassword}
       loginPath="/portal/login"
       forgotPath="/portal/forgot-password"
+      onSuccess={logout}
     />
   );
 }
