@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { useNavigate, useLocation, Link, Navigate } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
+import { useLoginCooldown } from '../../hooks/useLoginCooldown';
 import ErrorAlert from '../../components/ErrorAlert';
+import CooldownNotice from '../../components/CooldownNotice';
 import { Milk, Lock, Mail, Loader2, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'react-toastify';
 
@@ -13,6 +15,7 @@ export function Login() {
   const [formError, setFormError] = useState(null);
 
   const { login, isAuthenticated } = useAuth();
+  const cooldown = useLoginCooldown('staff');
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -27,6 +30,10 @@ export function Login() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setFormError(null);
+
+    // The server refuses these attempts anyway; stopping here keeps the
+    // countdown honest after a reload and avoids pointless requests.
+    if (cooldown.isBlocked) return;
 
     const trimmedEmail = email.trim();
     if (!trimmedEmail) {
@@ -44,6 +51,15 @@ export function Login() {
       toast.success(`Welcome back, ${loggedInUser.full_name || 'User'}!`);
       navigate(from, { replace: true });
     } catch (err) {
+      if (err?.code === 'TOO_MANY_ATTEMPTS') {
+        // Start the visible countdown from the server's remaining time; the
+        // message itself is composed on the server from the .env values.
+        cooldown.start(
+          err.retryAfterSeconds ?? (err.cooldownMinutes || 0) * 60,
+          err.cooldownMinutes,
+        );
+        return;
+      }
       // Backend returns 401 with { error: { message: "Invalid email or password" } }
       // Generic error prevents user enumeration
       setFormError(err.message || 'Invalid email or password. Please verify your credentials.');
@@ -81,6 +97,14 @@ export function Login() {
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="bg-white py-8 px-6 sm:px-10 shadow-2xl rounded-2xl border border-slate-100">
           <form className="space-y-5" onSubmit={handleSubmit}>
+            {cooldown.isBlocked && (
+              <CooldownNotice
+                remainingSeconds={cooldown.remainingSeconds}
+                clock={cooldown.clock}
+                pauseMinutes={cooldown.pauseMinutes}
+                resetHref="/forgot-password"
+              />
+            )}
             <ErrorAlert error={formError} onDismiss={() => setFormError(null)} />
 
             <div>
@@ -97,7 +121,7 @@ export function Login() {
                   type="email"
                   autoComplete="email"
                   required
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || cooldown.isBlocked}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@dairyfarm.com"
@@ -128,7 +152,7 @@ export function Login() {
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
                   required
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || cooldown.isBlocked}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••••••"
@@ -148,7 +172,7 @@ export function Login() {
             <div className="pt-2">
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || cooldown.isBlocked}
                 className="w-full flex justify-center items-center gap-2 py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-hidden focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed transition cursor-pointer"
               >
                 {isSubmitting ? (
@@ -156,6 +180,8 @@ export function Login() {
                     <Loader2 className="w-4 h-4 animate-spin" />
                     <span>Signing in...</span>
                   </>
+                ) : cooldown.isBlocked ? (
+                  <span>Sign-in paused ({cooldown.clock})</span>
                 ) : (
                   <span>Sign in to Dashboard</span>
                 )}

@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { toast } from 'react-toastify';
-import { getUsers, createUser, deleteUser } from '../../api/users';
+import { getUsers, createUser, deleteUser, updateUserStatus } from '../../api/users';
+import { useAuth } from '../../hooks/useAuth';
 import PageHeader from '../../components/PageHeader';
 import EmptyState from '../../components/EmptyState';
 import LoadingSpinner from '../../components/LoadingSpinner';
 import ErrorAlert from '../../components/ErrorAlert';
-import { UserCog, Plus, Search, X, ShieldCheck, UserCheck, RefreshCw, Mail, User, Trash2, AlertTriangle } from 'lucide-react';
+import { UserCog, Plus, Search, X, ShieldCheck, UserCheck, RefreshCw, Mail, User, Trash2, AlertTriangle, Lock, Unlock, PowerOff } from 'lucide-react';
 
 const EMPTY_FORM = {
   full_name: '',
@@ -21,6 +22,7 @@ const ROLE_CONFIG = {
 };
 
 export default function UserManagement() {
+  const { user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -30,6 +32,8 @@ export default function UserManagement() {
   const [formLoading, setFormLoading] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [statusFilter, setStatusFilter] = useState('all');
+  const [statusBusyId, setStatusBusyId] = useState(null);
 
   const fetchUsers = useCallback(() => {
     return getUsers({ page_size: 100 })
@@ -54,9 +58,34 @@ export default function UserManagement() {
   };
 
   const filtered = users.filter((u) => {
+    if (statusFilter === 'active' && (!u.is_active || u.is_locked)) return false;
+    if (statusFilter === 'inactive' && (u.is_active || u.is_locked)) return false;
+    if (statusFilter === 'locked' && !u.is_locked) return false;
     const q = search.toLowerCase();
     return !q || u.full_name?.toLowerCase().includes(q) || u.email?.toLowerCase().includes(q) || u.username?.toLowerCase().includes(q);
   });
+
+  const handleStatus = async (userAccount, isActive) => {
+    // The API rejects this too; the guard keeps a stale row from even trying.
+    if (!isActive && currentUser?.id === userAccount.id) {
+      toast.error('You cannot deactivate the account you are signed in with.');
+      return;
+    }
+    setStatusBusyId(userAccount.id);
+    try {
+      await updateUserStatus(userAccount.id, isActive);
+      toast.success(
+        isActive
+          ? `"${userAccount.full_name}" can sign in again.`
+          : `"${userAccount.full_name}" has been deactivated.`
+      );
+      await fetchUsers();
+    } catch (err) {
+      toast.error(err.message || 'Failed to update this account.');
+    } finally {
+      setStatusBusyId(null);
+    }
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -101,6 +130,8 @@ export default function UserManagement() {
 
   const adminCount = users.filter((u) => u.role === 'admin').length;
   const operatorCount = users.filter((u) => u.role === 'operator').length;
+  const lockedCount = users.filter((u) => u.is_locked).length;
+  const inactiveCount = users.filter((u) => !u.is_active && !u.is_locked).length;
 
   return (
     <div>
@@ -137,6 +168,34 @@ export default function UserManagement() {
           <span className="text-sm font-bold text-slate-800">{operatorCount}</span>
           <span className="text-xs text-slate-500">Operator{operatorCount !== 1 ? 's' : ''}</span>
         </div>
+        <div className="flex items-center gap-2 px-4 py-2 bg-white rounded-xl border border-slate-200 shadow-sm">
+          <Lock className="w-4 h-4 text-rose-600" />
+          <span className="text-sm font-bold text-slate-800">{lockedCount}</span>
+          <span className="text-xs text-slate-500">Locked</span>
+        </div>
+      </div>
+
+      {/* Status filter */}
+      <div className="mb-4 flex flex-wrap gap-2">
+        {[
+          { key: 'all', label: `All (${users.length})` },
+          { key: 'active', label: `Active (${users.filter((u) => u.is_active && !u.is_locked).length})` },
+          { key: 'inactive', label: `Inactive (${inactiveCount})` },
+          { key: 'locked', label: `Locked (${lockedCount})` },
+        ].map(({ key, label }) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setStatusFilter(key)}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition ${
+              statusFilter === key
+                ? 'bg-amber-500 text-white shadow-sm'
+                : 'border border-slate-200 bg-white text-slate-600 hover:border-amber-300'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
       </div>
 
       {/* Search */}
@@ -171,6 +230,7 @@ export default function UserManagement() {
                   <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Username</th>
                   <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Email</th>
                   <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Role</th>
+                  <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Status</th>
                   <th className="px-4 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">ID</th>
                   <th className="px-4 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Actions</th>
                 </tr>
@@ -179,6 +239,7 @@ export default function UserManagement() {
                 {filtered.map((u) => {
                   const RoleCfg = ROLE_CONFIG[u.role] || ROLE_CONFIG.operator;
                   const RoleIcon = RoleCfg.icon;
+                  const isSelf = currentUser?.id === u.id;
                   return (
                     <tr key={u.id} className="hover:bg-slate-50 transition-colors">
                       <td className="px-4 py-3">
@@ -187,6 +248,11 @@ export default function UserManagement() {
                             {u.full_name?.charAt(0)?.toUpperCase() || 'U'}
                           </div>
                           <span className="font-semibold text-slate-800">{u.full_name}</span>
+                          {isSelf && (
+                            <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-slate-500 uppercase">
+                              You
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3">
@@ -204,24 +270,72 @@ export default function UserManagement() {
                           <RoleIcon className="w-3 h-3" /> {RoleCfg.label}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-slate-400 text-xs font-mono">#{u.id}</td>
-                      <td className="px-4 py-3 text-right">
-                        {u.role === 'operator' ? (
-                          <button
-                            onClick={() => setDeleteTarget(u)}
-                            title={`Delete operator ${u.full_name}`}
-                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded-lg transition"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" /> Delete
-                          </button>
-                        ) : (
+                      <td className="px-4 py-3">
+                        {u.is_locked ? (
                           <span
-                            className="text-xs text-slate-400"
-                            title="Admin accounts are managed by deactivation"
+                            className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2 py-0.5 text-xs font-semibold text-rose-700"
+                            title={
+                              u.lock_reason === 'failed_login_attempts'
+                                ? 'Locked after too many failed sign-in attempts'
+                                : 'Locked by an administrator'
+                            }
                           >
-                            —
+                            <Lock className="w-3 h-3" /> Locked
+                          </span>
+                        ) : u.is_active ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-800">
+                            Active
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-600">
+                            Inactive
                           </span>
                         )}
+                      </td>
+                      <td className="px-4 py-3 text-slate-400 text-xs font-mono">#{u.id}</td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="inline-flex flex-wrap items-center justify-end gap-2">
+                          {u.is_locked || !u.is_active ? (
+                            <button
+                              onClick={() => handleStatus(u, true)}
+                              disabled={statusBusyId === u.id}
+                              title={
+                                u.is_locked
+                                  ? `Unlock ${u.full_name}`
+                                  : `Reactivate ${u.full_name}`
+                              }
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 rounded-lg transition disabled:opacity-60"
+                            >
+                              {u.is_locked ? <Unlock className="w-3.5 h-3.5" /> : <PowerOff className="w-3.5 h-3.5" />}
+                              {u.is_locked ? 'Unlock' : 'Reactivate'}
+                            </button>
+                          ) : isSelf ? (
+                            <span
+                              title="You cannot deactivate the account you are signed in with"
+                              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-500"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" /> Signed in
+                            </span>
+                          ) : (
+                            <button
+                              onClick={() => handleStatus(u, false)}
+                              disabled={statusBusyId === u.id}
+                              title={`Deactivate ${u.full_name}`}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-amber-700 bg-amber-50 border border-amber-200 hover:bg-amber-100 rounded-lg transition disabled:opacity-60"
+                            >
+                              <PowerOff className="w-3.5 h-3.5" /> Deactivate
+                            </button>
+                          )}
+                          {u.role === 'operator' && (
+                            <button
+                              onClick={() => setDeleteTarget(u)}
+                              title={`Delete operator ${u.full_name}`}
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded-lg transition"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" /> Delete
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );

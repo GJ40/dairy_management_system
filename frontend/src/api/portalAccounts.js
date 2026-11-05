@@ -8,6 +8,8 @@ export const provisionPortalAccount = (data) =>
   apiClient.post('/customer-portal-accounts', data);
 export const reactivatePortalAccount = (id) =>
   apiClient.post(`/customer-portal-accounts/${id}/reactivate`);
+export const unlockPortalAccount = (id) =>
+  apiClient.post(`/customer-portal-accounts/${id}/unlock`);
 export const deactivatePortalAccount = (id, reason) =>
   apiClient.post(`/customer-portal-accounts/${id}/deactivate`, { reason });
 export const resetPortalAccountActivation = (id) =>

@@ -181,9 +181,11 @@ export default function CustomerQueries() {
     if (detailId) loadDetail(detailId);
   };
 
+  const canMutate = Boolean(detail) && (isAdmin || detail?.assigned_to?.id === userId);
+
   const sendReply = async (event) => {
     event.preventDefault();
-    if (detail?.status === 'closed') return;
+    if (detail?.status === 'closed' || !canMutate) return;
     const body = reply.trim();
     if (!body) {
       toast.error('Enter a message first.');
@@ -204,7 +206,7 @@ export default function CustomerQueries() {
   };
 
   const changeStatus = async () => {
-    if (!statusTarget) return;
+    if (!statusTarget || !canMutate) return;
     setStatusLoading(true);
     try {
       await updateCustomerQueryStatus(detailId, statusTarget);
@@ -231,14 +233,19 @@ export default function CustomerQueries() {
     }
   };
 
-  const transitions = detail ? allowedTransitions(detail.status, isAdmin) : [];
+  const transitions =
+    detail && canMutate ? allowedTransitions(detail.status, isAdmin) : [];
   const detailClosed = detail?.status === 'closed';
+  const assignmentReadOnly = Boolean(detail) && !isAdmin && !canMutate;
+  const readOnlyReason = detail?.assigned_to?.full_name
+    ? `This query is assigned to ${detail.assigned_to.full_name}. An admin must reassign it to you before you can reply or change its status.`
+    : 'This query is unassigned. An admin must assign it to you before you can reply or change its status.';
 
   return (
     <div>
       <PageHeader
         title="Support Queries"
-        subtitle="Reply to customer tickets, add internal notes, and manage status and assignment."
+        subtitle="Reply to tickets assigned to you, add internal notes, and manage status; admins can reassign."
       >
         <button
           type="button"
@@ -458,6 +465,12 @@ export default function CustomerQueries() {
                 <ErrorAlert message={detailError} onRetry={() => loadDetail(detailId)} />
               ) : detail ? (
                 <>
+                  {assignmentReadOnly && (
+                    <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                      <p className="font-semibold">Read-only for you</p>
+                      <p className="mt-1 text-amber-800">{readOnlyReason}</p>
+                    </div>
+                  )}
                   <div className="mb-5 space-y-3">
                     {(detail.messages || []).map((message) => {
                       const staffMessage = message.sender_type === 'staff';
@@ -504,11 +517,13 @@ export default function CustomerQueries() {
                       maxLength={5000}
                       value={reply}
                       onChange={(event) => setReply(event.target.value)}
-                      disabled={detailClosed}
+                      disabled={detailClosed || !canMutate}
                       placeholder={
                         detailClosed
                           ? 'This query is closed. Reopen it to reply or add a note.'
-                          : 'Write a reply to the customer or an internal note…'
+                          : !canMutate
+                            ? readOnlyReason
+                            : 'Write a reply to the customer or an internal note…'
                       }
                       className="w-full resize-none rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                     />
@@ -518,14 +533,14 @@ export default function CustomerQueries() {
                           type="checkbox"
                           checked={internal}
                           onChange={(event) => setInternal(event.target.checked)}
-                          disabled={detailClosed}
+                          disabled={detailClosed || !canMutate}
                           className="h-4 w-4 rounded text-amber-600 disabled:cursor-not-allowed"
                         />
                         Internal note (hidden from customer)
                       </label>
                       <button
                         type="submit"
-                        disabled={sending || detailClosed}
+                        disabled={sending || detailClosed || !canMutate}
                         className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2 text-sm font-semibold text-white transition disabled:cursor-not-allowed disabled:opacity-60 ${
                           internal
                             ? 'bg-amber-500 hover:bg-amber-600'
@@ -561,7 +576,7 @@ export default function CustomerQueries() {
                         <button
                           type="button"
                           onClick={changeStatus}
-                          disabled={!statusTarget || statusLoading}
+                          disabled={!statusTarget || statusLoading || !canMutate}
                           className="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-white transition hover:bg-slate-900 disabled:opacity-50"
                         >
                           {statusLoading ? 'Saving…' : 'Update'}
@@ -605,7 +620,9 @@ export default function CustomerQueries() {
                         <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                           {detail.assigned_to?.full_name || 'Unassigned'}
                           <span className="ml-1 text-xs text-slate-400">
-                            (admin-managed)
+                            {detail.assigned_to?.id === userId
+                              ? '(assigned to you)'
+                              : '(read-only; admin-managed)'}
                           </span>
                         </p>
                       </div>
