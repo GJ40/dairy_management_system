@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
 from app.core.dependencies import get_customer_query_service, require_roles
+from app.core.request_context import get_request_context
 from app.models.user import User
 from app.schemas.customer_queries import (
     QueryAssignRequest,
@@ -58,6 +59,7 @@ async def get_customer_query(
 async def add_customer_query_message(
     query_id: int,
     payload: StaffAddQueryMessageRequest,
+    request: Request,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerQueryService = Depends(get_customer_query_service),
 ) -> dict[str, Any]:
@@ -66,6 +68,7 @@ async def add_customer_query_message(
         query_id,
         payload.message,
         is_internal=payload.is_internal,
+        context=get_request_context(request),
     )
 
 
@@ -73,17 +76,29 @@ async def add_customer_query_message(
 async def change_customer_query_status(
     query_id: int,
     payload: QueryStatusRequest,
+    request: Request,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerQueryService = Depends(get_customer_query_service),
 ) -> dict[str, Any]:
-    return await service.change_status(user, query_id, payload.status)
+    return await service.change_status(
+        user,
+        query_id,
+        payload.status,
+        context=get_request_context(request),
+    )
 
 
 @router.post("/{query_id}/assign")
 async def assign_customer_query(
     query_id: int,
     payload: QueryAssignRequest,
+    request: Request,
     user: User = Depends(require_roles("admin")),
     service: CustomerQueryService = Depends(get_customer_query_service),
 ) -> dict[str, Any]:
-    return await service.assign(user, query_id, payload.assigned_to)
+    return await service.assign(
+        user,
+        query_id,
+        payload.assigned_to,
+        context=get_request_context(request),
+    )

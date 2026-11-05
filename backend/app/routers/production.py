@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from app.core.dependencies import get_production_service, require_roles
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.user import User
 from app.schemas.production import (
     DATE_PATTERN,
@@ -122,16 +123,22 @@ async def production_by_date(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def record_production(
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: User = Depends(require_roles("admin", "operator")),
     service: ProductionService = Depends(get_production_service),
 ) -> dict[str, Any]:
+    context = get_request_context(request)
     if isinstance(body.get("entries"), list):
         try:
             payload = BulkProductionRequest.model_validate(body)
         except ValidationError as exc:
             raise RequestValidationError(exc.errors(include_url=False)) from exc
-        records = await service.record_bulk_production(payload, user)
+        records = await service.record_bulk_production(
+            payload,
+            user,
+            context=context,
+        )
         return {
             "message": f"Successfully saved {len(records)} production entries",
             "records": records,
@@ -141,5 +148,9 @@ async def record_production(
         single = SingleProductionRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    record = await service.record_production(single, user)
+    record = await service.record_production(
+        single,
+        user,
+        context=context,
+    )
     return {"record": record}

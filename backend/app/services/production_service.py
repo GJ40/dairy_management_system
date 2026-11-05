@@ -8,6 +8,7 @@ from fastapi import status
 from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.models.buffalo import Buffalo
 from app.models.user import User
 from app.repositories.buffalo_repository import BuffaloRepository
@@ -20,6 +21,7 @@ from app.schemas.production import (
     serialize_production_detail,
 )
 from app.services.buffalo_service import parse_buffalo_id
+from app.services.security_audit_service import SecurityAuditService
 from app.utils.time import get_business_date, is_future_date, is_today
 
 
@@ -40,9 +42,34 @@ class ProductionService:
         self,
         repository: ProductionRepository,
         buffalo_repository: BuffaloRepository,
+        *,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.buffalo_repository = buffalo_repository
+        self.audit = audit
+
+    async def _record(
+        self,
+        *,
+        event_type: str,
+        actor_user_id: int | None,
+        context: RequestContext | None,
+        production_id: int | None,
+        metadata: dict[str, object],
+    ) -> None:
+        if self.audit is None or actor_user_id is None:
+            return
+        await self.audit.record(
+            event_type=event_type,
+            context=context,
+            actor_user_id=actor_user_id,
+            resource_type=(
+                "milk_production" if production_id is not None else "milk_production_day"
+            ),
+            resource_id=production_id if production_id is not None else None,
+            metadata=metadata,
+        )
 
     def _assert_date_permission(self, prod_date: str, user: User) -> None:
         if is_future_date(prod_date):
@@ -81,6 +108,8 @@ class ProductionService:
         self,
         payload: SingleProductionRequest,
         user: User,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         self._assert_date_permission(payload.prod_date, user)
         await self._assert_active_buffalo(payload.buffalo_id)
@@ -103,7 +132,24 @@ class ProductionService:
                 )
             existing.litres = formatted_litres
             existing.recorded_by = user.id
-            await self.repository.commit()
+            try:
+                await self._record(
+                    event_type="production.updated",
+                    actor_user_id=user.id,
+                    context=context,
+                    production_id=existing.id,
+                    metadata={
+                        "production_id": existing.id,
+                        "buffalo_id": existing.buffalo_id,
+                        "prod_date": payload.prod_date,
+                        "session_name": existing.session,
+                        "litres": existing.litres,
+                    },
+                )
+                await self.repository.commit()
+            except Exception:
+                await self.repository.rollback()
+                raise
             return serialize_production(existing)
 
         record = await self.repository.create(
@@ -114,6 +160,20 @@ class ProductionService:
             recorded_by=user.id,
         )
         try:
+            await self.repository.flush()
+            await self._record(
+                event_type="production.recorded",
+                actor_user_id=user.id,
+                context=context,
+                production_id=record.id,
+                metadata={
+                    "production_id": record.id,
+                    "buffalo_id": record.buffalo_id,
+                    "prod_date": payload.prod_date,
+                    "session_name": record.session,
+                    "litres": record.litres,
+                },
+            )
             await self.repository.commit()
         except IntegrityError as exc:
             await self.repository.rollback()
@@ -122,16 +182,23 @@ class ProductionService:
                 "DUPLICATE_ENTRY",
                 _integrity_message(exc),
             ) from exc
+        except Exception:
+            await self.repository.rollback()
+            raise
         return serialize_production(record)
 
     async def record_bulk_production(
         self,
         payload: BulkProductionRequest,
         user: User,
+        *,
+        context: RequestContext | None = None,
     ) -> list[dict[str, Any]]:
         self._assert_date_permission(payload.prod_date, user)
         prod_date = date.fromisoformat(payload.prod_date)
         saved: list[Any] = []
+        created_count = 0
+        updated_count = 0
         try:
             for item in payload.entries:
                 buffalo = await self._assert_active_buffalo(item.buffalo_id)
@@ -162,6 +229,7 @@ class ProductionService:
                         existing.litres = _decimal_litres(litres)
                         existing.recorded_by = user.id
                         saved.append(existing)
+                        updated_count += 1
                     else:
                         record = await self.repository.create(
                             buffalo_id=buffalo.id,
@@ -172,7 +240,21 @@ class ProductionService:
                         )
                         await self.repository.flush()
                         saved.append(record)
+                        created_count += 1
 
+            if saved:
+                await self._record(
+                    event_type="production.bulk_recorded",
+                    actor_user_id=user.id,
+                    context=context,
+                    production_id=None,
+                    metadata={
+                        "prod_date": payload.prod_date,
+                        "entry_count": len(saved),
+                        "created_count": created_count,
+                        "updated_count": updated_count,
+                    },
+                )
             await self.repository.commit()
         except IntegrityError as exc:
             await self.repository.rollback()

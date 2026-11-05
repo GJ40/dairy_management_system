@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import status
 
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.repositories.expense_category_repository import ExpenseCategoryRepository
 from app.repositories.expense_repository import ExpenseRepository
 from app.schemas.expense import (
@@ -17,6 +18,7 @@ from app.schemas.expense import (
     UpdateExpenseRequest,
     serialize_expense,
 )
+from app.services.security_audit_service import SecurityAuditService
 
 
 def parse_expense_id(raw_id: str) -> int:
@@ -34,9 +36,32 @@ class ExpenseService:
         self,
         repository: ExpenseRepository,
         category_repository: ExpenseCategoryRepository,
+        *,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.category_repository = category_repository
+        self.audit = audit
+
+    async def _record(
+        self,
+        *,
+        event_type: str,
+        actor_user_id: int | None,
+        context: RequestContext | None,
+        expense_id: int,
+        metadata: dict[str, object],
+    ) -> None:
+        if self.audit is None or actor_user_id is None:
+            return
+        await self.audit.record(
+            event_type=event_type,
+            context=context,
+            actor_user_id=actor_user_id,
+            resource_type="expense",
+            resource_id=expense_id,
+            metadata=metadata,
+        )
 
     async def list_expenses(self, query: ExpenseQuery) -> dict[str, Any]:
         rows, total, total_amount = await self.repository.list_and_count(
@@ -73,6 +98,8 @@ class ExpenseService:
         self,
         payload: CreateExpenseRequest,
         user_id: int,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         category = await self.category_repository.get_by_id(payload.category_id)
         if category is None:
@@ -90,8 +117,24 @@ class ExpenseService:
             note=note,
             recorded_by=user_id,
         )
-        await self.repository.flush()
-        await self.repository.commit()
+        try:
+            await self.repository.flush()
+            await self._record(
+                event_type="expense.created",
+                actor_user_id=user_id,
+                context=context,
+                expense_id=expense.id,
+                metadata={
+                    "expense_id": expense.id,
+                    "category_id": expense.category_id,
+                    "expense_date": expense.expense_date,
+                    "amount": expense.amount,
+                },
+            )
+            await self.repository.commit()
+        except Exception:
+            await self.repository.rollback()
+            raise
 
         created = await self.repository.get_by_id(expense.id)
         if created is None:
@@ -106,6 +149,9 @@ class ExpenseService:
         self,
         raw_id: str,
         payload: UpdateExpenseRequest,
+        *,
+        actor_user_id: int | None = None,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         expense = await self.repository.get_by_id(parse_expense_id(raw_id))
         if expense is None:
@@ -126,16 +172,36 @@ class ExpenseService:
                     "NOT_FOUND",
                     f"Expense category with id {payload.category_id} not found",
                 )
-            updates["category_id"] = payload.category_id
+            if expense.category_id != payload.category_id:
+                updates["category_id"] = payload.category_id
         if payload.expense_date is not UNSET:
-            updates["expense_date"] = date.fromisoformat(payload.expense_date)
+            expense_date = date.fromisoformat(payload.expense_date)
+            if expense.expense_date != expense_date:
+                updates["expense_date"] = expense_date
         if payload.amount is not UNSET:
-            updates["amount"] = Decimal(f"{payload.amount:.2f}")
-        if payload.note is not UNSET:
+            amount = Decimal(f"{payload.amount:.2f}")
+            if expense.amount != amount:
+                updates["amount"] = amount
+        if payload.note is not UNSET and expense.note != payload.note:
             updates["note"] = payload.note
 
         await self.repository.update(expense, updates)
-        await self.repository.commit()
+        try:
+            if updates:
+                await self._record(
+                    event_type="expense.updated",
+                    actor_user_id=actor_user_id,
+                    context=context,
+                    expense_id=expense.id,
+                    metadata={
+                        "expense_id": expense.id,
+                        "changed_fields": list(updates),
+                    },
+                )
+            await self.repository.commit()
+        except Exception:
+            await self.repository.rollback()
+            raise
 
         updated = await self.repository.get_by_id(expense.id)
         if updated is None:

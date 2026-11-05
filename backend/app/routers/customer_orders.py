@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import APIRouter, Body, Depends, Query, Request, status
 
 from app.core.dependencies import (
     get_customer_order_service,
     require_roles,
 )
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.user import User
 from app.schemas.customer_orders_staff import (
     ApproveOrderRequest,
@@ -74,6 +75,7 @@ async def get_customer_order(
 @router.post("/{order_id}/approve")
 async def approve_customer_order(
     order_id: int,
+    request: Request,
     payload: ApproveOrderRequest | None = Body(default=None),
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerOrderService = Depends(get_customer_order_service),
@@ -82,33 +84,51 @@ async def approve_customer_order(
         user,
         order_id,
         payload.note if payload is not None else None,
+        context=get_request_context(request),
     )
 
 
 @router.post("/{order_id}/reject")
 async def reject_customer_order(
     order_id: int,
+    request: Request,
     payload: RejectOrderRequest,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerOrderService = Depends(get_customer_order_service),
 ) -> dict[str, Any]:
-    return await service.reject(user, order_id, payload.reason)
+    return await service.reject(
+        user,
+        order_id,
+        payload.reason,
+        context=get_request_context(request),
+    )
 
 
 @router.post("/{order_id}/fulfil")
 async def fulfil_customer_order(
     order_id: int,
+    request: Request,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerOrderService = Depends(get_customer_order_service),
 ) -> dict[str, Any]:
-    return await service.fulfil(user, order_id)
+    return await service.fulfil(
+        user,
+        order_id,
+        context=get_request_context(request),
+    )
 
 
 @router.post("/{order_id}/cancel")
 async def cancel_customer_order(
     order_id: int,
+    request: Request,
     payload: StaffCancelOrderRequest,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerOrderService = Depends(get_customer_order_service),
 ) -> dict[str, Any]:
-    return await service.staff_cancel(user, order_id, payload.reason)
+    return await service.staff_cancel(
+        user,
+        order_id,
+        payload.reason,
+        context=get_request_context(request),
+    )

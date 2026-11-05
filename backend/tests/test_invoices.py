@@ -13,6 +13,7 @@ from app.core.dependencies import (
     get_customer_repository,
     get_invoice_repository,
     get_sale_repository,
+    get_security_audit_service,
 )
 from app.core.security import create_access_token
 from app.db.session import get_db
@@ -29,6 +30,7 @@ from app.schemas.invoice import (
 )
 from app.services.invoice_service import InvoiceService
 from app.utils.pdf import build_invoice_pdf
+from tests.audit_helpers import FakeAuditService
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
 
@@ -534,6 +536,49 @@ class InvoiceServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(overpaid["balance"], "0.00")
         self.assertEqual(overpaid["status"], "paid")
 
+    async def test_invoice_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = InvoiceService(  # type: ignore[arg-type]
+            self.invoice_repository,
+            self.customer_repository,
+            self.sale_repository,
+            audit=audit,
+        )
+        invoice = await service.create_invoice(
+            CreateInvoiceRequest.model_validate(
+                {
+                    "customer_id": 1,
+                    "period_start": "2026-10-27",
+                    "period_end": "2026-10-27",
+                }
+            ),
+            actor_user_id=self.admin.id,
+        )
+        self.assertEqual(audit.records[-1]["event_type"], "invoice.created")
+        self.assertEqual(audit.records[-1]["metadata"]["sale_count"], 1)
+
+        await service.record_payment(
+            str(invoice["id"]),
+            RecordPaymentRequest.model_validate({"amount": 100}),
+            actor_user_id=self.admin.id,
+        )
+        self.assertEqual(
+            audit.records[-1]["event_type"], "invoice.payment.updated"
+        )
+        self.assertEqual(audit.records[-1]["metadata"]["from_status"], "unpaid")
+        self.assertEqual(audit.records[-1]["metadata"]["to_status"], "partial")
+
+        await service.generate_invoice_pdf(
+            str(invoice["id"]), actor_user_id=self.admin.id
+        )
+        self.assertEqual(
+            audit.standalone_records[-1]["event_type"],
+            "invoice.pdf.downloaded",
+        )
+        self.assertEqual(
+            audit.standalone_records[-1]["metadata"]["scope"], "staff"
+        )
+
     async def test_list_and_pdf(self) -> None:
         payload = CreateInvoiceRequest.model_validate(
             {
@@ -578,10 +623,13 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             username="ramesh_operator",
         )
 
+        self.audit = FakeAuditService()
+
         async def override_get_db():
             yield FakeSession(self.admin, self.operator)
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         app.dependency_overrides[get_customer_repository] = (
             lambda: self.customer_repository
         )

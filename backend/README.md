@@ -18,7 +18,7 @@ The legacy Node backend in `../backend` is not used by this service and was not 
 Set-Location -LiteralPath 'D:\Projects\dairy_management_system\backend_py'
 uv sync                                  # create .venv and install the lockfile
 Copy-Item .env.example .env              # then edit the values you need
-uv run alembic upgrade head              # 0001_baseline + 0002_customer_portal
+uv run alembic upgrade head              # 0001_baseline .. 0006_login_lockout
 uv run uvicorn app.main:app --reload     # http://localhost:8000
 ```
 
@@ -36,6 +36,9 @@ so the same file works as a template.
 | Bootstrap admin | `ADMIN_NAME`, `ADMIN_USERNAME`, `ADMIN_EMAIL`, `ADMIN_PASSWORD` |
 | Customer auth | `CUSTOMER_JWT_SECRET` (empty means "reuse `JWT_SECRET`"), `CUSTOMER_ACTIVATION_TTL_HOURS`, `CUSTOMER_REFRESH_COOKIE_NAME`, `CUSTOMER_SESSION_HINT_COOKIE_NAME` |
 | Order limits | `CUSTOMER_ORDER_MIN_LITRES`, `CUSTOMER_ORDER_MAX_LITRES`, `CUSTOMER_ORDER_DAILY_CAP_LITRES`, `CUSTOMER_ORDER_WINDOW_DAYS` |
+| Login protection | `LOGIN_COOLDOWN_THRESHOLD`, `LOGIN_COOLDOWN_MINUTES`, `LOGIN_LOCKOUT_THRESHOLD`, `LOGIN_LOCKOUT_WINDOW_MINUTES` |
+| Failed-login alerts | `FAILED_LOGIN_ALERT_ENABLED`, `FAILED_LOGIN_ALERT_THRESHOLD`, `FAILED_LOGIN_ALERT_WINDOW_MINUTES`, `FAILED_LOGIN_ALERT_COOLDOWN_MINUTES` |
+| Mail | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_USE_TLS`, `SMTP_USE_SSL`, `SMTP_TIMEOUT_SECONDS`, `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME`, `FRONTEND_URL`, `PASSWORD_RESET_TTL_MINUTES` |
 
 Set a distinct `CUSTOMER_JWT_SECRET` in production so staff and customer tokens cannot be
 confused for one another.
@@ -54,8 +57,24 @@ confused for one another.
 
 ```powershell
 uv run alembic current          # what the database is at
-uv run alembic upgrade head     # apply 0001â€“0004
+uv run alembic upgrade head     # apply 0001_baseline .. 0006_login_lockout
 uv run alembic downgrade -1     # roll the latest revision back
+```
+
+Every revision is **idempotent**: it creates only the tables, columns, indexes and
+foreign keys that are missing (`app/db/migration_helpers.py`), so
+`alembic upgrade head` can be re-run on a fresh volume, on the legacy Sequelize
+database, or on a database left behind by an interrupted run without failing with
+"table already exists" / "duplicate column name" / "duplicate key name". The chain is
+`0001_baseline` to `0006_login_lockout`.
+
+Under Docker the backend container does this by itself: `docker-entrypoint.sh` waits
+for MySQL, runs the migrations, ensures the base seed data, then starts Uvicorn. Use
+the plain `alembic` command inside the container - the image has no `uv.lock`, so
+`uv run` is the wrong prefix there:
+
+```bash
+docker compose exec backend alembic upgrade head
 ```
 
 `0002_customer_portal` is **purely additive** â€” it creates
@@ -135,7 +154,66 @@ before the bump; the bump is what stops the old token from working again after r
 
 ---
 
-## 6. Tests and checks
+## 6. Failed-login cooldown, lockout and alerts
+
+`app/services/login_lockout.py` owns the state machine used by both sign-in surfaces
+(`app/services/auth_service.py` and `app/services/customer_portal_auth_service.py`).
+
+| Attempt | Result |
+| --- | --- |
+| Wrong password, burst below `LOGIN_COOLDOWN_THRESHOLD` | `401 UNAUTHORIZED`, counter incremented |
+| Burst reaches the threshold (default 5) | Alert email, then `429 TOO_MANY_ATTEMPTS` |
+| Any attempt while the pause runs | `429`, refused before the password is checked, counter unchanged |
+| Counted failures reach `LOGIN_LOCKOUT_THRESHOLD` (default 10) | `403 ACCOUNT_LOCKED`; `is_active=False`, `locked_at` set, `token_version` bumped. Permanent: no timer, only an administrator unlock (`clear_lock`) re-activates the account |
+
+**State.** Nothing is stored in memory or in a cookie: the pause is derived from
+`failed_login_count` and `failed_login_first_at` on the account row
+(`app/models/user.py`, `app/models/customer_portal_account.py`). A closed tab, a reload, a
+different browser or an API restart therefore cannot shorten it, and attempts made while
+it runs are not counted, so they cannot escalate into a lock.
+
+**Clock.** `register_failed_attempt` resets `failed_login_first_at` at the moment the
+threshold is reached, so the pause always lasts the full `LOGIN_COOLDOWN_MINUTES`. (If it
+were measured from the first failure, a slow burst of five guesses could finish after the
+pause had already elapsed.) `burst_expires_at` adds the pause back to the counting window
+so the burst is not considered stale while it is blocked.
+
+**Response contract.** `cooldown_error()` returns `429` with the standard envelope plus
+machine-readable fields, and `cooldown_message()` builds the prose from settings:
+
+```json
+{
+  "error": {
+    "code": "TOO_MANY_ATTEMPTS",
+    "message": "Too many failed sign-in attempts. Sign-in is paused for 5 minutes after 5 failed attempts. Try again in 2 minutes 8 seconds.",
+    "retry_after_seconds": 128,
+    "cooldown_minutes": 5,
+    "cooldown_threshold": 5
+  }
+}
+```
+
+The `Retry-After` header carries the same seconds. `_error_response` in
+`app/routers/auth.py` and `app/routers/customer_auth.py`, and the global handler in
+`app/core/errors.py`, preserve those extra keys instead of trimming the body to
+`code`/`message`.
+
+**Changing the window.** Edit `LOGIN_COOLDOWN_MINUTES` (and/or
+`LOGIN_COOLDOWN_THRESHOLD`) in `backend_py/.env` and restart the API. Because both the
+message and the structured fields are built from `settings` at call time, the login pages,
+API clients, logs and the alert email all follow with no code change. `docker-compose.yaml`
+also forwards these variables, so the container sees the same values.
+
+**Mail.** `app/services/email_service.py` renders all five messages
+(`send_password_reset`, `send_password_changed`, `send_failed_login_alert`,
+`send_account_locked_notice`, `send_portal_activation`) through one inline-styled,
+table-based shell: hidden preheader, brand bar with a tone-coded status pill, accent rule,
+details table, numbered steps, tinted callout and a matching plain-text part. No external
+images, fonts or scripts, so the layout holds in Gmail, Outlook and mobile clients.
+
+---
+
+## 7. Tests and checks
 
 ```powershell
 Set-Location -LiteralPath 'D:\Projects\dairy_management_system\backend_py'

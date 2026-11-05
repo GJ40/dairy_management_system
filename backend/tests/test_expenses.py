@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.dependencies import (
     get_expense_category_repository,
     get_expense_repository,
+    get_security_audit_service,
 )
 from app.core.security import create_access_token
 from app.db.session import get_db
@@ -28,6 +29,7 @@ from app.schemas.expense import (
 from app.schemas.expense_category import CreateExpenseCategoryRequest
 from app.services.expense_category_service import ExpenseCategoryService
 from app.services.expense_service import ExpenseService
+from tests.audit_helpers import FakeAuditService
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
 
@@ -117,6 +119,15 @@ class FakeExpenseCategoryRepository:
             ),
             None,
         )
+
+    async def flush(self) -> None:
+        return None
+
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
+        return None
 
     async def create(self, *, name: str) -> ExpenseCategory:
         category = ExpenseCategory(
@@ -349,6 +360,21 @@ class CategoryServiceTests(unittest.IsolatedAsyncioTestCase):
             _,
         ) = build_services()
 
+    async def test_category_audit_event(self) -> None:
+        audit = FakeAuditService()
+        service = ExpenseCategoryService(self.category_repository, audit)  # type: ignore[arg-type]
+        created = await service.create_category(
+            CreateExpenseCategoryRequest.model_validate({"name": "Transport"}),
+            actor_user_id=1,
+        )
+        self.assertEqual(
+            audit.records[-1]["event_type"], "expense_category.created"
+        )
+        self.assertEqual(
+            audit.records[-1]["metadata"]["category_id"],
+            created["category"]["id"],
+        )
+
     async def test_list_and_create(self) -> None:
         listing = await self.service.list_categories()
         self.assertEqual(len(listing["categories"]), 1)
@@ -469,6 +495,39 @@ class ExpenseServiceTests(unittest.IsolatedAsyncioTestCase):
             "Expense category with id 99 not found",
         )
 
+    async def test_expense_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = ExpenseService(  # type: ignore[arg-type]
+            self.expense_repository,
+            self.category_repository,
+            audit=audit,
+        )
+        created = await service.create_expense(
+            CreateExpenseRequest.model_validate(
+                {
+                    "category_id": 1,
+                    "expense_date": "2026-10-28",
+                    "amount": 500,
+                }
+            ),
+            self.admin.id,
+        )
+        self.assertEqual(audit.records[-1]["event_type"], "expense.created")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["expense_id"],
+            created["expense"]["id"],
+        )
+
+        await service.update_expense(
+            str(created["expense"]["id"]),
+            UpdateExpenseRequest.model_validate({"amount": 600}),
+            actor_user_id=self.admin.id,
+        )
+        self.assertEqual(audit.records[-1]["event_type"], "expense.updated")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["changed_fields"], ["amount"]
+        )
+
     async def test_create_requires_category(self) -> None:
         payload = CreateExpenseRequest.model_validate(
             {"category_id": 42, "expense_date": "2026-10-28", "amount": 10}
@@ -495,10 +554,13 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             2, role="operator", username="ramesh_operator"
         )
 
+        self.audit = FakeAuditService()
+
         async def override_get_db():
             yield FakeSession(self.admin, self.operator)
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         app.dependency_overrides[get_expense_category_repository] = (
             lambda: self.category_repository
         )

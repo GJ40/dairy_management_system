@@ -3,11 +3,13 @@ from __future__ import annotations
 import html as html_module
 import logging
 import smtplib
+from datetime import datetime, timezone
 
 import anyio
 import emails
 
 from app.core.config import settings
+from app.utils.time import business_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -24,25 +26,85 @@ def _escape(value: str) -> str:
     return html_module.escape(value or "", quote=True)
 
 
-def _layout(*, heading: str, body_html: str, footer_note: str) -> str:
-    """Shared responsive shell: inline styles only, no external assets."""
+# Semantic colours shared by the banner, callouts and detail tables.
+_TONES = {
+    "info": {
+        "bg": "#eff6ff",
+        "border": "#bfdbfe",
+        "text": "#1e40af",
+        "dot": "#2563eb",
+    },
+    "success": {
+        "bg": "#ecfdf5",
+        "border": "#a7f3d0",
+        "text": "#065f46",
+        "dot": "#059669",
+    },
+    "warning": {
+        "bg": "#fffbeb",
+        "border": "#fde68a",
+        "text": "#92400e",
+        "dot": "#d97706",
+    },
+    "danger": {
+        "bg": "#fff1f2",
+        "border": "#fecdd3",
+        "text": "#9f1239",
+        "dot": "#e11d48",
+    },
+}
+
+
+def _layout(
+    *,
+    heading: str,
+    body_html: str,
+    footer_note: str,
+    preheader: str = "",
+    status_label: str | None = None,
+    tone: str = "info",
+) -> str:
+    """Shared responsive shell: inline styles only, no external assets.
+
+    ``preheader`` is the preview line mail clients show next to the subject;
+    hiding it here keeps the inbox tidy without leaking it into the body.
+    """
+    palette = _TONES.get(tone, _TONES["info"])
+    accent = palette["dot"]
+    status_html = (
+        f'<span style="display:inline-block;padding:5px 12px;border-radius:999px;'
+        f'background:{palette["bg"]};color:{palette["text"]};font-size:10px;'
+        f'font-weight:800;letter-spacing:1px;text-transform:uppercase;">'
+        f"{_escape(status_label)}</span>"
+        if status_label
+        else ""
+    )
     return f"""\
 <!doctype html>
 <html lang="en">
   <body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;color:#0f172a;">
+    <div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all;">{_escape(preheader)}</div>
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:32px 12px;">
       <tr>
         <td align="center">
           <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;">
             <tr>
-              <td style="background:#064e3b;padding:28px 32px;">
-                <p style="margin:0;color:#6ee7b7;font-size:11px;letter-spacing:2px;text-transform:uppercase;font-weight:700;">{BRAND_TAGLINE}</p>
-                <p style="margin:6px 0 0;color:#ffffff;font-size:22px;font-weight:800;">{BRAND_NAME}</p>
+              <td style="background:#064e3b;padding:24px 32px;border-bottom:3px solid {accent};">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="vertical-align:middle;">
+                      <p style="margin:0;color:#6ee7b7;font-size:11px;letter-spacing:2px;text-transform:uppercase;font-weight:700;">{BRAND_TAGLINE}</p>
+                      <p style="margin:6px 0 0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.2px;">{BRAND_NAME}</p>
+                    </td>
+                    <td align="right" style="vertical-align:middle;padding-left:12px;">{status_html}</td>
+                  </tr>
+                </table>
               </td>
             </tr>
             <tr>
               <td style="padding:32px 32px 8px;">
-                <h1 style="margin:0 0 12px;font-size:20px;line-height:1.3;color:#0f172a;">{_escape(heading)}</h1>
+                <h1 style="margin:0 0 6px;font-size:22px;line-height:1.3;letter-spacing:-0.3px;color:#0f172a;">{_escape(heading)}</h1>
+                <div style="width:44px;height:3px;border-radius:2px;background:{accent};margin:0 0 20px;"></div>
                 {body_html}
               </td>
             </tr>
@@ -53,9 +115,11 @@ def _layout(*, heading: str, body_html: str, footer_note: str) -> str:
             </tr>
             <tr>
               <td style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:18px 32px;">
+                <p style="margin:0 0 4px;font-size:11px;line-height:1.6;color:#94a3b8;">
+                  {BRAND_NAME} &middot; Anand, Gujarat &middot; Asia/Kolkata
+                </p>
                 <p style="margin:0;font-size:11px;line-height:1.6;color:#94a3b8;">
-                  {BRAND_NAME} &middot; Anand, Gujarat &middot; Asia/Kolkata<br />
-                  This is an automated message; please do not reply to it.
+                  Automated security message &middot; {_escape(settings.mail_from_email)} &middot; please do not reply
                 </p>
               </td>
             </tr>
@@ -69,23 +133,99 @@ def _layout(*, heading: str, body_html: str, footer_note: str) -> str:
 
 def _button(label: str, url: str) -> str:
     return f"""\
-<table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0;">
+<table role="presentation" cellpadding="0" cellspacing="0" style="margin:4px 0 22px;">
   <tr>
     <td style="border-radius:10px;background:#059669;">
       <a href="{_escape(url)}" style="display:inline-block;padding:13px 26px;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:10px;">{_escape(label)}</a>
     </td>
   </tr>
 </table>
-<p style="margin:0 0 8px;font-size:12px;line-height:1.6;color:#64748b;">
-  If the button does not work, copy this link into your browser:
+<p style="margin:0 0 6px;font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#94a3b8;">
+  Or paste this link into your browser
 </p>
-<p style="margin:0;font-size:12px;line-height:1.6;word-break:break-all;">
+<p style="margin:0 0 20px;font-size:12px;line-height:1.6;word-break:break-all;">
   <a href="{_escape(url)}" style="color:#047857;">{_escape(url)}</a>
 </p>"""
 
 
 def _paragraph(text: str) -> str:
     return f'<p style="margin:0 0 14px;font-size:14px;line-height:1.65;color:#334155;">{text}</p>'
+
+
+def _callout(title: str, text: str, *, tone: str = "warning") -> str:
+    palette = _TONES.get(tone, _TONES["warning"])
+    border = palette["border"]
+    background = palette["bg"]
+    colour = palette["text"]
+    return f"""\
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:2px 0 20px;border:1px solid {border};background:{background};border-radius:10px;">
+  <tr>
+    <td style="padding:14px 16px;">
+      <p style="margin:0 0 4px;font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:{colour};">{_escape(title)}</p>
+      <p style="margin:0;font-size:13px;line-height:1.6;color:{colour};">{text}</p>
+    </td>
+  </tr>
+</table>"""
+
+
+def _details_table(rows: list[tuple[str, str]]) -> str:
+    """Two-column fact table; values may contain pre-escaped inline markup."""
+    cells = "".join(
+        "<tr>"
+        f'<td style="padding:10px 14px;border-top:1px solid #eef2f7;width:40%;font-size:10px;'
+        f'font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#64748b;'
+        f'vertical-align:top;">{_escape(label)}</td>'
+        f'<td style="padding:10px 14px;border-top:1px solid #eef2f7;font-size:13px;'
+        f'line-height:1.5;color:#0f172a;">{value}</td>'
+        "</tr>"
+        for label, value in rows
+    )
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        'style="margin:2px 0 20px;border:1px solid #e2e8f0;border-radius:10px;'
+        'border-collapse:separate;border-spacing:0;overflow:hidden;background:#ffffff;">'
+        f"{cells}</table>"
+    )
+
+
+def _steps(items: list[str]) -> str:
+    rows = "".join(
+        "<tr>"
+        '<td style="padding:0 0 10px;vertical-align:top;width:26px;">'
+        f'<span style="display:inline-block;width:22px;height:22px;border-radius:999px;'
+        f'background:#ecfdf5;color:#047857;font-size:11px;font-weight:800;'
+        f'text-align:center;line-height:22px;">{index}</span></td>'
+        f'<td style="padding:1px 0 10px 10px;font-size:13px;line-height:1.6;color:#334155;">'
+        f"{text}</td></tr>"
+        for index, text in enumerate(items, start=1)
+    )
+    return (
+        '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" '
+        f'style="margin:2px 0 12px;">{rows}</table>'
+    )
+
+
+def _section_label(text: str) -> str:
+    return (
+        '<p style="margin:0 0 8px;font-size:10px;font-weight:800;letter-spacing:0.08em;'
+        f'text-transform:uppercase;color:#94a3b8;">{_escape(text)}</p>'
+    )
+
+
+def _as_utc(moment: datetime) -> datetime:
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def _timestamp_pair(moment: datetime | None = None) -> tuple[str, str]:
+    """(IST, UTC) display strings for one instant, defaulting to now."""
+    utc_value = _as_utc(moment or datetime.now(timezone.utc))
+    ist_value = utc_value.astimezone(business_timezone())
+    return (
+        ist_value.strftime("%d %b %Y, %H:%M:%S IST"),
+        utc_value.strftime("%d %b %Y, %H:%M:%S UTC"),
+    )
 
 
 class EmailService:
@@ -106,26 +246,49 @@ class EmailService:
         audience: str,
     ) -> bool:
         minutes = settings.password_reset_ttl_minutes
-        heading = "Reset your password"
-        greeting = f"Hello {_escape(name or 'there')},"
         body = (
-            _paragraph(greeting)
+            _paragraph(f"Hello {_escape(name or 'there')},")
             + _paragraph(
-                f"We received a request to reset the password for your {audience} "
-                "account. Choose a new password using the link below."
+                "We received a request to reset the password for your "
+                f"<strong>{_escape(audience)}</strong> account. Use the button "
+                "below to choose a new one."
             )
             + _button("Choose a new password", reset_url)
-            + _paragraph(
-                f"This link can be used once and expires in {minutes} minutes. "
-                f"{SUPPORT_LINE}"
+            + _section_label("What happens next")
+            + _steps(
+                [
+                    "Open the link above and choose a new password.",
+                    "Use at least 8 characters, and avoid a password you use "
+                    "elsewhere.",
+                    "Sign in with the new password. The link cannot be reused.",
+                ]
+            )
+            + _details_table(
+                [
+                    ("Account", _escape(audience)),
+                    ("Link expires", f"In {minutes} minutes"),
+                    ("Valid for", "One sign-in change only"),
+                ]
+            )
+            + _callout(
+                "Did not request this?",
+                "You can ignore this email - your current password stays "
+                "unchanged and the link expires on its own.",
+                tone="warning",
             )
         )
         return await self._deliver(
             to=to,
             subject="Reset your password — AmritDhara Dairy",
             html=_layout(
-                heading=heading,
+                heading="Reset your password",
                 body_html=body,
+                preheader=(
+                    f"Choose a new {audience} password. The link expires in "
+                    f"{minutes} minutes."
+                ),
+                status_label="Action required",
+                tone="warning",
                 footer_note=(
                     "Password reset links are single-use. If yours has expired, "
                     "request a new one from the sign-in page."
@@ -133,9 +296,20 @@ class EmailService:
             ),
             text=(
                 f"Hello {name or 'there'},\n\n"
-                f"We received a request to reset the password for your {audience} "
-                f"account.\nOpen this link to choose a new password:\n{reset_url}\n\n"
-                f"The link can be used once and expires in {minutes} minutes.\n"
+                "RESET YOUR PASSWORD\n\n"
+                f"We received a request to reset the password for your "
+                f"{audience} account.\n\n"
+                f"Choose a new password:\n{reset_url}\n\n"
+                "What happens next\n"
+                "  1. Open the link and choose a new password.\n"
+                "  2. Use at least 8 characters, and avoid a password you use "
+                "elsewhere.\n"
+                "  3. Sign in with the new password. The link cannot be reused.\n\n"
+                f"Account: {audience}\n"
+                f"Link expires: in {minutes} minutes\n"
+                "Valid for: one password change only\n\n"
+                "Did not request this? You can ignore this email - your "
+                "current password stays unchanged.\n\n"
                 f"{SUPPORT_LINE}\n"
             ),
             link=reset_url,
@@ -148,16 +322,28 @@ class EmailService:
         name: str,
         audience: str,
     ) -> bool:
+        changed_at = _timestamp_pair()
         body = (
             _paragraph(f"Hello {_escape(name or 'there')},")
             + _paragraph(
-                f"The password for your {audience} account was changed just now. "
-                "You can sign in with the new password."
+                "The password for your "
+                f"<strong>{_escape(audience)}</strong> account was changed just "
+                "now. You can sign in with the new password."
             )
-            + _paragraph(
-                "If you did not make this change, contact the dairy immediately "
-                "and request a new password reset."
+            + _details_table(
+                [
+                    ("Account", _escape(audience)),
+                    ("Changed at (IST)", _escape(changed_at[0])),
+                    ("Changed at (UTC)", _escape(changed_at[1])),
+                ]
             )
+            + _callout(
+                "Was this not you?",
+                "Reset the password again immediately and tell the dairy so the "
+                "account can be secured.",
+                tone="danger",
+            )
+            + _paragraph(SUPPORT_LINE)
         )
         return await self._deliver(
             to=to,
@@ -165,12 +351,228 @@ class EmailService:
             html=_layout(
                 heading="Your password was changed",
                 body_html=body,
+                preheader=(
+                    f"The password for your {audience} account was just changed."
+                ),
+                status_label="Password changed",
+                tone="success",
                 footer_note=SUPPORT_LINE,
             ),
             text=(
                 f"Hello {name or 'there'},\n\n"
+                "YOUR PASSWORD WAS CHANGED\n\n"
                 f"The password for your {audience} account was changed just now.\n"
-                "If you did not make this change, contact the dairy immediately.\n"
+                "You can sign in with the new password.\n\n"
+                f"Account: {audience}\n"
+                f"Changed at (IST): {changed_at[0]}\n"
+                f"Changed at (UTC): {changed_at[1]}\n\n"
+                "Was this not you? Reset the password again immediately and "
+                "tell the dairy so the account can be secured.\n\n"
+                f"{SUPPORT_LINE}\n"
+            ),
+        )
+
+    async def send_failed_login_alert(
+        self,
+        *,
+        to: str,
+        name: str,
+        scope: str,
+        failure_count: int,
+        window_minutes: int,
+        occurred_at_utc: datetime,
+        ip_address: str | None,
+        user_agent: str | None,
+        cooldown_minutes: int | None = None,
+    ) -> bool:
+        scope_label = "staff" if scope == "staff" else "customer portal"
+        ist_text, utc_text = _timestamp_pair(occurred_at_utc)
+        ip_text = ip_address or "Unknown"
+        device_text = user_agent or "Unknown"
+
+        cooldown_html = ""
+        cooldown_text = ""
+        if cooldown_minutes:
+            cooldown_html = _callout(
+                f"Sign-in paused for {cooldown_minutes} minutes",
+                "Too many failed attempts were recorded, so sign-in to this "
+                f"account is paused until the {cooldown_minutes}-minute cooling "
+                "period ends. You can reset your password now, or try again "
+                "once the countdown finishes.",
+                tone="warning",
+            )
+            cooldown_text = (
+                f"SIGN-IN PAUSED FOR {cooldown_minutes} MINUTES\n"
+                "Too many failed attempts were recorded, so sign-in to this "
+                "account is paused until the cooling period ends. You can reset "
+                "your password now, or try again once the countdown finishes.\n\n"
+            )
+
+        body = (
+            _paragraph(f"Hello {_escape(name or 'there')},")
+            + _paragraph(
+                f"We recorded <strong>{failure_count} failed sign-in "
+                f"attempt{'s' if failure_count != 1 else ''}</strong> to your "
+                f"{_escape(scope_label)} account in the last {window_minutes} "
+                "minutes."
+            )
+            + cooldown_html
+            + _section_label("Attempt details")
+            + _details_table(
+                [
+                    ("Account type", _escape(scope_label)),
+                    ("Failed attempts", f"<strong>{failure_count}</strong>"),
+                    ("Alert window", f"Last {window_minutes} minutes"),
+                    ("Detected (IST)", _escape(ist_text)),
+                    ("Detected (UTC)", _escape(utc_text)),
+                    ("IP address", _escape(ip_text)),
+                    ("Device", _escape(device_text)),
+                ]
+            )
+            + _section_label("What to do")
+            + _steps(
+                [
+                    "If these attempts were yours, no action is needed.",
+                    "If not, reset your password from the sign-in page right away.",
+                    "Still unsure? Contact the dairy and quote the detection time "
+                    "above.",
+                ]
+            )
+        )
+        return await self._deliver(
+            to=to,
+            subject="Security alert: failed sign-in attempts — AmritDhara Dairy",
+            html=_layout(
+                heading="Failed sign-in attempts on your account",
+                body_html=body,
+                preheader=(
+                    f"{failure_count} failed sign-in attempts to your "
+                    f"{scope_label} account in the last {window_minutes} minutes."
+                ),
+                status_label="Security alert",
+                tone="warning",
+                footer_note=(
+                    "This alert never asks for your password or a verification "
+                    "code. Sign in only through the dairy's usual address."
+                ),
+            ),
+            text=(
+                f"Hello {name or 'there'},\n\n"
+                "SECURITY ALERT: FAILED SIGN-IN ATTEMPTS\n\n"
+                f"We recorded {failure_count} failed sign-in attempt"
+                f"{'s' if failure_count != 1 else ''} to your {scope_label} "
+                f"account in the last {window_minutes} minutes.\n\n"
+                f"{cooldown_text}"
+                "Attempt details\n"
+                f"  Account type:   {scope_label}\n"
+                f"  Failed attempts: {failure_count}\n"
+                f"  Alert window:   last {window_minutes} minutes\n"
+                f"  Detected (IST): {ist_text}\n"
+                f"  Detected (UTC): {utc_text}\n"
+                f"  IP address:     {ip_text}\n"
+                f"  Device:         {device_text}\n\n"
+                "What to do\n"
+                "  1. If these attempts were yours, no action is needed.\n"
+                "  2. If not, reset your password from the sign-in page right "
+                "away.\n"
+                "  3. Still unsure? Contact the dairy and quote the detection "
+                "time above.\n"
+            ),
+        )
+
+    async def send_account_locked_notice(
+        self,
+        *,
+        to: str,
+        name: str,
+        scope: str,
+        failure_count: int,
+        window_minutes: int,
+        locked_at_utc: datetime,
+        ip_address: str | None,
+        user_agent: str | None,
+    ) -> bool:
+        scope_label = "staff" if scope == "staff" else "customer portal"
+        ist_text, utc_text = _timestamp_pair(locked_at_utc)
+        ip_text = ip_address or "Unknown"
+        device_text = user_agent or "Unknown"
+
+        body = (
+            _paragraph(f"Hello {_escape(name or 'there')},")
+            + _paragraph(
+                f"Your <strong>{_escape(scope_label)}</strong> account has been "
+                "locked after "
+                f"<strong>{failure_count} failed sign-in "
+                f"attempt{'s' if failure_count != 1 else ''}</strong> in the last "
+                f"{window_minutes} minutes."
+            )
+            + _callout(
+                "Sign-in is disabled",
+                "The account stays locked until an administrator unlocks it. "
+                "Contact the dairy with the time below and ask for an unlock.",
+                tone="danger",
+            )
+            + _section_label("Lock details")
+            + _details_table(
+                [
+                    ("Account type", _escape(scope_label)),
+                    ("Failed attempts", f"<strong>{failure_count}</strong>"),
+                    ("Alert window", f"Last {window_minutes} minutes"),
+                    ("Locked at (IST)", _escape(ist_text)),
+                    ("Locked at (UTC)", _escape(utc_text)),
+                    ("IP address", _escape(ip_text)),
+                    ("Device", _escape(device_text)),
+                ]
+            )
+            + _section_label("What to do")
+            + _steps(
+                [
+                    "Ask an administrator to unlock the account.",
+                    "Change your password once the account is unlocked, before "
+                    "signing in again.",
+                    "If you did not attempt these sign-ins, tell the dairy so the "
+                    "device and IP above can be reviewed.",
+                ]
+            )
+        )
+        return await self._deliver(
+            to=to,
+            subject="Security alert: account locked — AmritDhara Dairy",
+            html=_layout(
+                heading="Your account has been locked",
+                body_html=body,
+                preheader=(
+                    f"Your {scope_label} account was locked after "
+                    f"{failure_count} failed sign-in attempts."
+                ),
+                status_label="Account locked",
+                tone="danger",
+                footer_note=(
+                    "This alert never asks for your password or a verification "
+                    "code. Sign in only through the dairy's usual address."
+                ),
+            ),
+            text=(
+                f"Hello {name or 'there'},\n\n"
+                "ACCOUNT LOCKED\n\n"
+                f"Your {scope_label} account has been locked after {failure_count} "
+                f"failed sign-in attempt{'s' if failure_count != 1 else ''} in the "
+                f"last {window_minutes} minutes.\n\n"
+                "SIGN-IN IS DISABLED\n"
+                "The account stays locked until an administrator unlocks it. "
+                "Contact the dairy with the time below and ask for an unlock.\n\n"
+                "Lock details\n"
+                f"  Account type:    {scope_label}\n"
+                f"  Failed attempts: {failure_count}\n"
+                f"  Alert window:    last {window_minutes} minutes\n"
+                f"  Locked at (IST): {ist_text}\n"
+                f"  Locked at (UTC): {utc_text}\n"
+                f"  IP address:      {ip_text}\n"
+                f"  Device:          {device_text}\n\n"
+                "What to do\n"
+                "  1. Ask an administrator to unlock the account.\n"
+                "  2. Change your password once the account is unlocked.\n"
+                "  3. If you did not attempt these sign-ins, tell the dairy.\n"
             ),
         )
 
@@ -190,9 +592,27 @@ class EmailService:
                 "support queries online."
             )
             + _button("Activate my portal account", activation_url)
-            + _paragraph(
-                f"This link can be used once and expires in {expires_hours} hours. "
-                "If it expires, ask the dairy to send a fresh one."
+            + _section_label("How to get started")
+            + _steps(
+                [
+                    "Open the activation link above and choose a password.",
+                    "Sign in to the portal with the email address the dairy "
+                    "registered for you.",
+                    "Review your deliveries, bills and payments in one place.",
+                ]
+            )
+            + _details_table(
+                [
+                    ("Portal", "Customer self-service"),
+                    ("Link expires", f"In {expires_hours} hours"),
+                    ("Valid for", "One activation only"),
+                ]
+            )
+            + _callout(
+                "Keep this link private",
+                "Anyone with this link can set your portal password. If it "
+                "expires, ask the dairy to send a fresh invitation.",
+                tone="info",
             )
         )
         return await self._deliver(
@@ -201,15 +621,30 @@ class EmailService:
             html=_layout(
                 heading="Activate your customer portal",
                 body_html=body,
+                preheader=(
+                    f"Set your portal password - this invitation expires in "
+                    f"{expires_hours} hours."
+                ),
+                status_label="Invitation",
+                tone="success",
                 footer_note=(
                     "This activation link is single-use. Never share it with anyone."
                 ),
             ),
             text=(
                 f"Hello {name or 'there'},\n\n"
-                "Your dairy has created a customer portal account for you.\n"
+                "ACTIVATE YOUR CUSTOMER PORTAL\n\n"
+                "Your dairy has created a customer portal account for you.\n\n"
                 f"Set your password here:\n{activation_url}\n\n"
-                f"The link can be used once and expires in {expires_hours} hours.\n"
+                "How to get started\n"
+                "  1. Open the activation link and choose a password.\n"
+                "  2. Sign in with the email address the dairy registered for "
+                "you.\n"
+                "  3. Review your deliveries, bills and payments in one place.\n\n"
+                "Portal: customer self-service\n"
+                f"Link expires: in {expires_hours} hours\n"
+                "Valid for: one activation only\n\n"
+                "Keep this link private - anyone with it can set your password.\n"
             ),
             link=activation_url,
         )

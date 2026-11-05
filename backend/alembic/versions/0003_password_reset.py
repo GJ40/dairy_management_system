@@ -12,7 +12,11 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 
-from alembic import op
+from app.db.migration_helpers import (
+    create_index_if_missing,
+    create_table_if_missing,
+    drop_table_if_exists,
+)
 
 revision: str = "0003_password_reset"
 down_revision: Union[str, Sequence[str], None] = "0002_customer_portal"
@@ -27,7 +31,7 @@ TABLE_OPTIONS = {
 
 
 def upgrade() -> None:
-    op.create_table(
+    create_table_if_missing(
         "password_reset_tokens",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("scope", sa.String(length=20), nullable=False),
@@ -39,13 +43,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "password_reset_tokens_token_hash",
         "password_reset_tokens",
         ["token_hash"],
         unique=True,
     )
-    op.create_index(
+    create_index_if_missing(
         "password_reset_tokens_scope_subject_id",
         "password_reset_tokens",
         ["scope", "subject_id"],
@@ -53,4 +57,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_table("password_reset_tokens")
+    drop_table_if_exists("password_reset_tokens")

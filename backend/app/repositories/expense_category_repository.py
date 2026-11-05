@@ -36,3 +36,12 @@ class ExpenseCategoryRepository:
         category = ExpenseCategory(name=name)
         self.session.add(category)
         return category
+
+    async def flush(self) -> None:
+        await self.session.flush()
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()

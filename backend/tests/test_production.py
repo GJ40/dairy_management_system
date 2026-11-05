@@ -10,7 +10,11 @@ from pydantic import ValidationError
 
 import app.models  # noqa: F401
 from app.core.config import settings
-from app.core.dependencies import get_buffalo_repository, get_production_repository
+from app.core.dependencies import (
+    get_buffalo_repository,
+    get_production_repository,
+    get_security_audit_service,
+)
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
@@ -26,6 +30,7 @@ from app.schemas.production import (
 )
 from app.services.production_service import ProductionService
 from app.utils.time import get_business_date
+from tests.audit_helpers import FakeAuditService
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
 
@@ -409,6 +414,61 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated["litres"], "7.25")
         self.assertEqual(updated["recorded_by"], self.admin.id)
 
+    async def test_production_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = ProductionService(  # type: ignore[arg-type]
+            self.repository,
+            self.buffalo_repository,
+            audit=audit,
+        )
+        payload = SingleProductionRequest.model_validate(
+            {
+                "buffalo_id": 1,
+                "prod_date": "2025-01-15",
+                "session": "morning",
+                "litres": 6.5,
+            }
+        )
+        await service.record_production(payload, self.admin)
+        self.assertEqual(audit.records[-1]["event_type"], "production.recorded")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["session_name"], "morning"
+        )
+
+        overwrite = SingleProductionRequest.model_validate(
+            {
+                "buffalo_id": 1,
+                "prod_date": "2025-01-15",
+                "session": "morning",
+                "litres": 7.25,
+                "overwrite": True,
+            }
+        )
+        await service.record_production(overwrite, self.admin)
+        self.assertEqual(audit.records[-1]["event_type"], "production.updated")
+
+    async def test_bulk_production_audit_event(self) -> None:
+        audit = FakeAuditService()
+        service = ProductionService(  # type: ignore[arg-type]
+            self.repository,
+            self.buffalo_repository,
+            audit=audit,
+        )
+        payload = BulkProductionRequest.model_validate(
+            {
+                "prod_date": "2025-01-15",
+                "entries": [
+                    {"buffalo_id": 1, "morning_litres": 6.5},
+                    {"buffalo_id": 2, "evening_litres": 5.0},
+                ],
+            }
+        )
+        await service.record_bulk_production(payload, self.admin)
+        event = audit.records[-1]
+        self.assertEqual(event["event_type"], "production.bulk_recorded")
+        self.assertEqual(event["metadata"]["entry_count"], 2)
+        self.assertEqual(event["metadata"]["created_count"], 2)
+
     async def test_operator_only_today(self) -> None:
         payload = SingleProductionRequest.model_validate(
             {
@@ -593,6 +653,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_production_repository] = (
             override_production_repository
         )
+        self.audit = FakeAuditService()
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",

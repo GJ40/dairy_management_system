@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi import status as http_status
 
 from app.core.dependencies import (
@@ -14,6 +14,7 @@ from app.core.dependencies import (
     get_customer_query_service,
 )
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.customer_portal_account import CustomerPortalAccount
 from app.schemas.customer_invoices import PortalInvoiceQuery
 from app.schemas.customer_orders import (
@@ -65,6 +66,7 @@ async def get_profile(
 
 @router.post("/orders", status_code=http_status.HTTP_201_CREATED)
 async def create_order(
+    request: Request,
     payload: CreateCustomerOrderRequest,
     account: CustomerPortalAccount = Depends(get_current_customer_account),
     service: CustomerOrderService = Depends(get_customer_order_service),
@@ -74,6 +76,7 @@ async def create_order(
         quantity_litres=payload.quantity_litres,
         requested_date=payload.requested_date,
         note=payload.note,
+        context=get_request_context(request),
     )
 
 
@@ -111,6 +114,7 @@ async def get_order(
 @router.post("/orders/{order_id}/cancel")
 async def cancel_order(
     order_id: int,
+    request: Request,
     payload: CancelCustomerOrderRequest | None = None,
     account: CustomerPortalAccount = Depends(get_current_customer_account),
     service: CustomerOrderService = Depends(get_customer_order_service),
@@ -119,6 +123,7 @@ async def cancel_order(
         account,
         order_id,
         payload.reason if payload is not None else None,
+        context=get_request_context(request),
     )
 
 
@@ -156,10 +161,15 @@ async def get_invoice(
 @router.get("/invoices/{invoice_id}/pdf")
 async def get_invoice_pdf(
     invoice_id: int,
+    request: Request,
     account: CustomerPortalAccount = Depends(get_current_customer_account),
     service: CustomerInvoiceService = Depends(get_customer_invoice_service),
 ) -> Response:
-    content, filename = await service.generate_invoice_pdf(account, invoice_id)
+    content, filename = await service.generate_invoice_pdf(
+        account,
+        invoice_id,
+        context=get_request_context(request),
+    )
     return Response(
         content=content,
         media_type="application/pdf",
@@ -180,6 +190,7 @@ async def get_balance(
 
 @router.post("/queries", status_code=http_status.HTTP_201_CREATED)
 async def create_query(
+    request: Request,
     payload: CreateCustomerQueryRequest,
     account: CustomerPortalAccount = Depends(get_current_customer_account),
     service: CustomerQueryService = Depends(get_customer_query_service),
@@ -189,6 +200,7 @@ async def create_query(
         category=payload.category,
         subject=payload.subject,
         message=payload.message,
+        context=get_request_context(request),
     )
 
 
@@ -225,8 +237,14 @@ async def get_query(
 )
 async def add_query_message(
     query_id: int,
+    request: Request,
     payload: AddCustomerQueryMessageRequest,
     account: CustomerPortalAccount = Depends(get_current_customer_account),
     service: CustomerQueryService = Depends(get_customer_query_service),
 ) -> dict[str, Any]:
-    return await service.add_customer_message(account, query_id, payload.message)
+    return await service.add_customer_message(
+        account,
+        query_id,
+        payload.message,
+        context=get_request_context(request),
+    )

@@ -12,6 +12,7 @@ from app.core.dependencies import (
     get_customer_portal_account_repository,
     get_customer_query_repository,
     get_customer_repository,
+    get_security_audit_service,
     get_user_repository,
 )
 from app.core.security import create_access_token, create_customer_access_token
@@ -242,6 +243,19 @@ class FakeUserRepository:
         return next((row for row in self.users if row.id == user_id), None)
 
 
+class FakeAuditService:
+    def __init__(self) -> None:
+        self.denials: list[dict[str, Any]] = []
+        self.events: list[dict[str, Any]] = []
+
+    async def record(self, **kwargs: Any) -> None:
+        self.events.append(kwargs)
+
+    async def record_standalone(self, **kwargs: Any) -> bool:
+        self.denials.append(kwargs)
+        return True
+
+
 class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.customer = make_customer()
@@ -264,11 +278,13 @@ class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
         self.operator = make_user(2, role="operator", username="ramesh_operator")
         self.users = FakeUserRepository([self.admin, self.operator])
         self.repository = FakeQueryRepository()
+        self.audit = FakeAuditService()
         self.service = CustomerQueryService(
             self.repository,
             self.customers,
             self.accounts,
             self.users,
+            self.audit,
         )
 
     async def test_create_query(self) -> None:
@@ -285,6 +301,14 @@ class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(query["messages"]), 1)
         self.assertEqual(query["messages"][0]["sender_type"], "customer")
         self.assertEqual(self.repository.commits, 1)
+        self.assertEqual(self.audit.events[-1]["event_type"], "query.created")
+        self.assertEqual(
+            self.audit.events[-1]["actor_account_id"], self.account.id
+        )
+        self.assertEqual(
+            self.audit.events[-1]["metadata"]["query_no"], query["query_no"]
+        )
+        self.assertNotIn("subject", self.audit.events[-1]["metadata"])
 
         self.repository.queries[0].status = "answered"
         self.repository.messages.append(
@@ -350,6 +374,13 @@ class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(history.sender_type, "system")
         self.assertIn("answered", history.body)
         self.assertIn("open", history.body)
+        self.assertEqual(
+            self.audit.events[-1]["event_type"], "query.customer_message"
+        )
+        self.assertEqual(
+            self.audit.events[-1]["metadata"]["message_id"],
+            result["message"]["id"],
+        )
 
     async def test_customer_follow_up_blocked_when_closed(self) -> None:
         self.repository.queries.append(make_query(1, status="closed"))
@@ -389,7 +420,9 @@ class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(customer_detail["query"]["messages"]), 1)
 
     async def test_staff_message(self) -> None:
-        self.repository.queries.append(make_query(1))
+        self.repository.queries.append(
+            make_query(1, assigned_to=self.operator.id)
+        )
         result = await self.service.add_staff_message(
             self.operator,
             1,
@@ -398,9 +431,18 @@ class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result["message"]["sender_type"], "staff")
         self.assertFalse(result["message"]["is_internal"])
+        self.assertEqual(
+            self.audit.events[-1]["event_type"], "query.staff_message"
+        )
+        self.assertEqual(
+            self.audit.events[-1]["metadata"]["message_id"],
+            result["message"]["id"],
+        )
 
     async def test_staff_message_blocked_when_closed(self) -> None:
-        self.repository.queries.append(make_query(1, status="closed"))
+        self.repository.queries.append(
+            make_query(1, status="closed", assigned_to=self.operator.id)
+        )
         with self.assertRaises(Exception) as caught:
             await self.service.add_staff_message(
                 self.operator,
@@ -411,13 +453,18 @@ class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(caught.exception.detail["code"], "QUERY_CLOSED")
 
     async def test_status_transitions(self) -> None:
-        self.repository.queries.append(make_query(1))
+        self.repository.queries.append(
+            make_query(1, assigned_to=self.operator.id)
+        )
         result = await self.service.change_status(
             self.operator,
             1,
             "in_progress",
         )
         self.assertEqual(result["query"]["status"], "in_progress")
+        self.assertEqual(
+            self.audit.events[-1]["event_type"], "query.status.changed"
+        )
         history = self.repository.messages[-1]
         self.assertEqual(history.sender_type, "system")
         self.assertFalse(history.is_internal)
@@ -444,6 +491,13 @@ class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
         self.repository.queries.append(make_query(1))
         result = await self.service.assign(self.admin, 1, self.operator.id)
         self.assertEqual(result["query"]["assigned_to"]["id"], self.operator.id)
+        self.assertEqual(
+            self.audit.events[-1]["event_type"], "query.assigned"
+        )
+        self.assertEqual(
+            self.audit.events[-1]["metadata"]["to_user_id"],
+            self.operator.id,
+        )
         note = self.repository.messages[-1]
         self.assertEqual(note.sender_type, "system")
         self.assertTrue(note.is_internal)
@@ -451,11 +505,104 @@ class QueryServiceTests(unittest.IsolatedAsyncioTestCase):
 
         cleared = await self.service.assign(self.admin, 1, None)
         self.assertIsNone(cleared["query"]["assigned_to"])
+        self.assertEqual(
+            self.audit.events[-1]["event_type"], "query.unassigned"
+        )
         self.assertEqual(self.repository.messages[-1].body, "Unassigned")
 
         with self.assertRaises(Exception) as invalid:
             await self.service.assign(self.admin, 1, 999)
         self.assertEqual(invalid.exception.detail["code"], "VALIDATION_ERROR")
+
+    async def test_operator_cannot_mutate_unassigned_query(self) -> None:
+        self.repository.queries.append(make_query(1))
+
+        with self.assertRaises(Exception) as message:
+            await self.service.add_staff_message(
+                self.operator,
+                1,
+                "Trying to reply",
+                is_internal=False,
+            )
+        self.assertEqual(message.exception.status_code, 403)
+        self.assertEqual(
+            message.exception.detail["code"],
+            "QUERY_NOT_ASSIGNED",
+        )
+
+        with self.assertRaises(Exception) as status_change:
+            await self.service.change_status(self.operator, 1, "in_progress")
+        self.assertEqual(status_change.exception.status_code, 403)
+
+        self.assertEqual(len(self.audit.denials), 2)
+        first = self.audit.denials[0]
+        self.assertEqual(first["event_type"], "query.access.denied")
+        self.assertEqual(first["actor_user_id"], self.operator.id)
+        self.assertEqual(first["resource_type"], "customer_query")
+        self.assertEqual(first["resource_id"], 1)
+        self.assertEqual(first["metadata"]["query_id"], 1)
+        self.assertIsNone(first["metadata"]["assigned_to_user_id"])
+        self.assertEqual(first["metadata"]["attempted_action"], "message")
+        self.assertEqual(
+            self.audit.denials[1]["metadata"]["attempted_action"],
+            "status_change",
+        )
+
+    async def test_operator_cannot_mutate_another_operators_query(self) -> None:
+        self.repository.queries.append(make_query(1, assigned_to=99))
+
+        with self.assertRaises(Exception) as internal_note:
+            await self.service.add_staff_message(
+                self.operator,
+                1,
+                "Internal note",
+                is_internal=True,
+            )
+        self.assertEqual(internal_note.exception.status_code, 403)
+        self.assertEqual(
+            self.audit.denials[-1]["metadata"]["assigned_to_user_id"],
+            99,
+        )
+        self.assertEqual(
+            self.audit.denials[-1]["metadata"]["attempted_action"],
+            "internal_note",
+        )
+
+    async def test_admin_can_mutate_unassigned_query(self) -> None:
+        self.repository.queries.append(make_query(1))
+
+        message = await self.service.add_staff_message(
+            self.admin,
+            1,
+            "Admin reply",
+            is_internal=False,
+        )
+        self.assertEqual(message["message"]["sender_type"], "staff")
+
+        changed = await self.service.change_status(self.admin, 1, "in_progress")
+        self.assertEqual(changed["query"]["status"], "in_progress")
+        self.assertEqual(self.audit.denials, [])
+
+    async def test_operator_can_mutate_assigned_query(self) -> None:
+        self.repository.queries.append(
+            make_query(1, assigned_to=self.operator.id)
+        )
+
+        message = await self.service.add_staff_message(
+            self.operator,
+            1,
+            "Assigned reply",
+            is_internal=False,
+        )
+        self.assertEqual(message["message"]["sender_type"], "staff")
+
+        changed = await self.service.change_status(
+            self.operator,
+            1,
+            "in_progress",
+        )
+        self.assertEqual(changed["query"]["status"], "in_progress")
+        self.assertEqual(self.audit.denials, [])
 
     async def test_missing_query(self) -> None:
         with self.assertRaises(Exception) as caught:
@@ -484,6 +631,7 @@ class QueryApiTests(unittest.IsolatedAsyncioTestCase):
             [self.account, self.other_account]
         )
         self.users = FakeUserRepository([self.admin, self.operator])
+        self.audit = FakeAuditService()
         self.repository = FakeQueryRepository()
         self.repository.queries.append(make_query(1))
         self.repository.queries.append(make_query(2, customer_id=99))
@@ -508,6 +656,7 @@ class QueryApiTests(unittest.IsolatedAsyncioTestCase):
             lambda: self.accounts
         )
         app.dependency_overrides[get_user_repository] = lambda: self.users
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
@@ -636,6 +785,7 @@ class QueryApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail.status_code, 200)
         self.assertEqual(len(detail.json()["query"]["messages"]), 2)
 
+        self.repository.queries[0].assigned_to = self.operator.id
         note = await self.client.post(
             "/api/v1/customer-queries/1/messages",
             headers=self._staff_auth(self.operator),
@@ -652,6 +802,7 @@ class QueryApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(bad_flag.status_code, 400)
 
     async def test_staff_status_and_assign_permissions(self) -> None:
+        self.repository.queries[0].assigned_to = self.operator.id
         moved = await self.client.post(
             "/api/v1/customer-queries/1/status",
             headers=self._staff_auth(self.operator),
@@ -692,6 +843,72 @@ class QueryApiTests(unittest.IsolatedAsyncioTestCase):
             json={"assigned_to": self.operator.id},
         )
         self.assertEqual(operator_assign.status_code, 403)
+
+    async def test_operator_assignment_enforcement_and_admin_bypass(self) -> None:
+        denied_message = await self.client.post(
+            "/api/v1/customer-queries/1/messages",
+            headers=self._staff_auth(self.operator),
+            json={"message": "Let me help", "is_internal": False},
+        )
+        self.assertEqual(denied_message.status_code, 403)
+        self.assertEqual(
+            denied_message.json()["error"]["code"],
+            "QUERY_NOT_ASSIGNED",
+        )
+
+        denied_status = await self.client.post(
+            "/api/v1/customer-queries/1/status",
+            headers=self._staff_auth(self.operator),
+            json={"status": "in_progress"},
+        )
+        self.assertEqual(denied_status.status_code, 403)
+        self.assertEqual(len(self.audit.denials), 2)
+        self.assertEqual(
+            self.audit.denials[0]["metadata"]["attempted_action"],
+            "message",
+        )
+        self.assertIsNone(
+            self.audit.denials[0]["metadata"]["assigned_to_user_id"]
+        )
+        self.assertEqual(
+            self.audit.denials[1]["metadata"]["attempted_action"],
+            "status_change",
+        )
+
+        admin_message = await self.client.post(
+            "/api/v1/customer-queries/1/messages",
+            headers=self._staff_auth(self.admin),
+            json={"message": "Admin reply", "is_internal": False},
+        )
+        self.assertEqual(admin_message.status_code, 201)
+
+        admin_status = await self.client.post(
+            "/api/v1/customer-queries/1/status",
+            headers=self._staff_auth(self.admin),
+            json={"status": "in_progress"},
+        )
+        self.assertEqual(admin_status.status_code, 200)
+
+        assigned = await self.client.post(
+            "/api/v1/customer-queries/1/assign",
+            headers=self._staff_auth(self.admin),
+            json={"assigned_to": self.operator.id},
+        )
+        self.assertEqual(assigned.status_code, 200)
+
+        operator_message = await self.client.post(
+            "/api/v1/customer-queries/1/messages",
+            headers=self._staff_auth(self.operator),
+            json={"message": "Now assigned", "is_internal": False},
+        )
+        self.assertEqual(operator_message.status_code, 201)
+
+        operator_status = await self.client.post(
+            "/api/v1/customer-queries/1/status",
+            headers=self._staff_auth(self.operator),
+            json={"status": "answered"},
+        )
+        self.assertEqual(operator_status.status_code, 200)
 
     async def test_staff_access_required_and_openapi(self) -> None:
         anonymous = await self.client.get("/api/v1/customer-queries")

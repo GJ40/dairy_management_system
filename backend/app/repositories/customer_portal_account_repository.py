@@ -72,6 +72,12 @@ class CustomerPortalAccountRepository:
             conditions.append(CustomerPortalAccount.customer_id == query.customer_id)
         if query.is_active is not None:
             conditions.append(CustomerPortalAccount.is_active.is_(query.is_active))
+        if query.is_locked is not None:
+            conditions.append(
+                CustomerPortalAccount.locked_at.is_not(None)
+                if query.is_locked
+                else CustomerPortalAccount.locked_at.is_(None)
+            )
 
         count_statement = select(func.count()).select_from(CustomerPortalAccount).where(
             *conditions

@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.core.dependencies import get_wastage_service, require_roles
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.user import User
 from app.schemas.wastage import (
     DATE_PATTERN,
@@ -113,6 +114,7 @@ async def list_wastage(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def record_wastage(
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: User = Depends(require_roles("admin", "operator")),
     service: WastageService = Depends(get_wastage_service),
@@ -121,4 +123,8 @@ async def record_wastage(
         payload = RecordWastageRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return await service.record_wastage(payload, user)
+    return await service.record_wastage(
+        payload,
+        user,
+        context=get_request_context(request),
+    )

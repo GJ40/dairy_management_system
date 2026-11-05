@@ -14,6 +14,7 @@ from app.core.dependencies import (
     require_roles,
 )
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.user import User
 from app.schemas.expense import (
     CreateExpenseRequest,
@@ -137,14 +138,20 @@ async def list_expense_categories_alias(
 
 @router.post("/categories", status_code=status.HTTP_201_CREATED)
 async def create_category(
+    request: Request,
     body: dict[str, Any] = Body(...),
+    user: User = Depends(ADMIN),
     service: ExpenseCategoryService = Depends(get_expense_category_service),
 ) -> dict[str, Any]:
     try:
         payload = CreateExpenseCategoryRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return await service.create_category(payload)
+    return await service.create_category(
+        payload,
+        actor_user_id=user.id,
+        context=get_request_context(request),
+    )
 
 
 @router.get("")
@@ -157,6 +164,7 @@ async def list_expenses(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_expense(
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: User = Depends(ADMIN),
     service: ExpenseService = Depends(get_expense_service),
@@ -165,7 +173,11 @@ async def create_expense(
         payload = CreateExpenseRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return await service.create_expense(payload, user.id)
+    return await service.create_expense(
+        payload,
+        user.id,
+        context=get_request_context(request),
+    )
 
 
 @router.get("/{expense_id}")
@@ -179,11 +191,18 @@ async def get_expense(
 @router.put("/{expense_id}")
 async def update_expense(
     expense_id: str,
+    request: Request,
     body: dict[str, Any] = Body(...),
+    user: User = Depends(ADMIN),
     service: ExpenseService = Depends(get_expense_service),
 ) -> dict[str, Any]:
     try:
         payload = UpdateExpenseRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return await service.update_expense(expense_id, payload)
+    return await service.update_expense(
+        expense_id,
+        payload,
+        actor_user_id=user.id,
+        context=get_request_context(request),
+    )

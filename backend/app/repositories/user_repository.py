@@ -51,6 +51,12 @@ class UserRepository:
             conditions.append(User.role == query.role)
         if query.is_active is not None:
             conditions.append(User.is_active.is_(query.is_active))
+        if query.is_locked is not None:
+            conditions.append(
+                User.locked_at.is_not(None)
+                if query.is_locked
+                else User.locked_at.is_(None)
+            )
         if query.search:
             term = f"%{query.search}%"
             conditions.append(

@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import status
 
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.models.invoice import Invoice
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.invoice_repository import InvoiceRepository
@@ -20,6 +21,7 @@ from app.schemas.invoice import (
     RecordPaymentRequest,
     serialize_invoice,
 )
+from app.services.security_audit_service import SecurityAuditService
 from app.utils.pdf import build_invoice_pdf
 
 CENT = Decimal("0.01")
@@ -41,10 +43,33 @@ class InvoiceService:
         repository: InvoiceRepository,
         customer_repository: CustomerRepository,
         sale_repository: SaleRepository,
+        *,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
         self.sale_repository = sale_repository
+        self.audit = audit
+
+    async def _record(
+        self,
+        *,
+        event_type: str,
+        actor_user_id: int | None,
+        context: RequestContext | None,
+        invoice_id: int,
+        metadata: dict[str, object],
+    ) -> None:
+        if self.audit is None or actor_user_id is None:
+            return
+        await self.audit.record(
+            event_type=event_type,
+            context=context,
+            actor_user_id=actor_user_id,
+            resource_type="invoice",
+            resource_id=invoice_id,
+            metadata=metadata,
+        )
 
     async def _generate_unique_invoice_number(self, date_str: str) -> str:
         clean_date = date_str.replace("-", "")
@@ -87,6 +112,9 @@ class InvoiceService:
     async def create_invoice(
         self,
         payload: CreateInvoiceRequest,
+        *,
+        actor_user_id: int | None = None,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         customer = await self.customer_repository.get_by_id(payload.customer_id)
         if customer is None:
@@ -159,6 +187,19 @@ class InvoiceService:
             )
             await self.repository.flush()
             await self.repository.create_invoice_sales(invoice.id, sale_ids)
+            await self._record(
+                event_type="invoice.created",
+                actor_user_id=actor_user_id,
+                context=context,
+                invoice_id=invoice.id,
+                metadata={
+                    "invoice_id": invoice.id,
+                    "invoice_no": invoice.invoice_no,
+                    "customer_id": invoice.customer_id,
+                    "sale_count": len(sale_ids),
+                    "total_amount": invoice.total_amount,
+                },
+            )
             await self.repository.commit()
         except Exception:
             await self.repository.rollback()
@@ -207,6 +248,9 @@ class InvoiceService:
         self,
         raw_id: str,
         payload: RecordPaymentRequest,
+        *,
+        actor_user_id: int | None = None,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         payment_amount = Decimal(str(payload.amount))
         if not payment_amount.is_finite() or payment_amount <= 0:
@@ -229,6 +273,7 @@ class InvoiceService:
 
             current_total = Decimal(str(invoice.total_amount))
             current_paid = Decimal(str(invoice.paid_amount))
+            from_status = invoice.status
             new_paid = current_paid + payment_amount
             new_status = "partial"
             if new_paid >= current_total:
@@ -253,6 +298,18 @@ class InvoiceService:
                         link.sale.payment_status = "paid"
                 await self.repository.mark_sales_paid(sale_ids)
 
+            await self._record(
+                event_type="invoice.payment.updated",
+                actor_user_id=actor_user_id,
+                context=context,
+                invoice_id=invoice.id,
+                metadata={
+                    "invoice_id": invoice.id,
+                    "from_status": from_status,
+                    "to_status": new_status,
+                    "amount_paid": invoice.paid_amount,
+                },
+            )
             await self.repository.commit()
         except Exception:
             await self.repository.rollback()
@@ -263,6 +320,10 @@ class InvoiceService:
     async def generate_invoice_pdf(
         self,
         raw_id: str,
+        *,
+        actor_user_id: int | None = None,
+        context: RequestContext | None = None,
+        scope: str = "staff",
     ) -> tuple[bytes, str]:
         invoice = await self.get_invoice_by_id(raw_id)
         buffer = build_invoice_pdf(
@@ -270,4 +331,13 @@ class InvoiceService:
             customer=invoice["customer"],
             sales=invoice["sales"],
         )
+        if self.audit is not None and actor_user_id is not None:
+            await self.audit.record_standalone(
+                event_type="invoice.pdf.downloaded",
+                context=context,
+                actor_user_id=actor_user_id,
+                resource_type="invoice",
+                resource_id=invoice["id"],
+                metadata={"invoice_id": invoice["id"], "scope": scope},
+            )
         return buffer, f"invoice-{invoice['invoice_no']}.pdf"

@@ -119,6 +119,7 @@ class PortalAccountQuery:
     page_size: int = 20
     customer_id: int | None = None
     is_active: bool | None = None
+    is_locked: bool | None = None
 
 
 def serialize_customer_public(customer: Any) -> dict[str, Any]:
@@ -141,6 +142,9 @@ def serialize_portal_account(
         "email": account.email,
         "customer_id": account.customer_id,
         "is_active": bool(account.is_active),
+        "is_locked": account.locked_at is not None,
+        "locked_at": iso_timestamp(account.locked_at),
+        "lock_reason": account.lock_reason,
         "activated_at": iso_timestamp(account.activated_at),
         "last_login_at": iso_timestamp(account.last_login_at),
         "created_at": iso_timestamp(account.created_at),

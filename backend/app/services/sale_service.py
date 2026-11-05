@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import status
 
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.models.customer import Customer
 from app.models.user import User
 from app.repositories.customer_order_repository import CustomerOrderRepository
@@ -21,6 +22,7 @@ from app.schemas.sale import (
     _date_string,
     serialize_sale_detail,
 )
+from app.services.security_audit_service import SecurityAuditService
 from app.services.stock_lock import StockLockService
 from app.services.stock_service import StockService
 from app.utils.time import is_future_date, is_today
@@ -53,12 +55,34 @@ class SaleService:
         *,
         stock_lock: StockLockService | None = None,
         order_repository: CustomerOrderRepository | None = None,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
         self.stock_service = stock_service
         self.stock_lock = stock_lock
         self.order_repository = order_repository
+        self.audit = audit
+
+    async def _record(
+        self,
+        *,
+        event_type: str,
+        actor_user_id: int | None,
+        context: RequestContext | None,
+        sale_id: int,
+        metadata: dict[str, object],
+    ) -> None:
+        if self.audit is None or actor_user_id is None:
+            return
+        await self.audit.record(
+            event_type=event_type,
+            context=context,
+            actor_user_id=actor_user_id,
+            resource_type="sale",
+            resource_id=sale_id,
+            metadata=metadata,
+        )
 
     @asynccontextmanager
     async def _lock(self):
@@ -109,6 +133,8 @@ class SaleService:
         self,
         payload: CreateSaleRequest,
         user: User,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         self._assert_date_permission(payload.sale_date, user)
 
@@ -156,6 +182,19 @@ class SaleService:
                 await self.repository.flush()
                 updated_stock = await self.stock_service.get_stock_for_date(
                     payload.sale_date
+                )
+                await self._record(
+                    event_type="sale.created",
+                    actor_user_id=user.id,
+                    context=context,
+                    sale_id=sale.id,
+                    metadata={
+                        "sale_id": sale.id,
+                        "customer_id": sale.customer_id,
+                        "sale_date": _date_string(sale.sale_date),
+                        "litres": sale.litres,
+                        "amount": sale.amount,
+                    },
                 )
                 await self.repository.commit()
             except Exception:
@@ -231,6 +270,8 @@ class SaleService:
         raw_id: str,
         payload: UpdateSaleRequest,
         user: User,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         sale = await self.repository.get_by_id(parse_sale_id(raw_id))
         if sale is None:
@@ -279,12 +320,31 @@ class SaleService:
                     CENT,
                     rounding=ROUND_HALF_UP,
                 )
+                changed_fields: list[str] = []
+                if new_date != current_date:
+                    changed_fields.append("sale_date")
+                if new_litres != current_litres:
+                    changed_fields.append("litres")
+                if new_rate != current_rate:
+                    changed_fields.append("rate")
                 sale.sale_date = date.fromisoformat(new_date)
                 sale.litres = new_litres.quantize(CENT, rounding=ROUND_HALF_UP)
                 sale.rate = new_rate.quantize(CENT, rounding=ROUND_HALF_UP)
                 sale.amount = new_amount
                 sale.recorded_by = user.id
 
+                if changed_fields:
+                    await self._record(
+                        event_type="sale.updated",
+                        actor_user_id=user.id,
+                        context=context,
+                        sale_id=sale.id,
+                        metadata={
+                            "sale_id": sale.id,
+                            "customer_id": sale.customer_id,
+                            "changed_fields": changed_fields,
+                        },
+                    )
                 await self.repository.commit()
             except Exception:
                 await self.repository.rollback()

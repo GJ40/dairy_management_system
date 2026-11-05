@@ -10,6 +10,7 @@ from app.core.dependencies import (
     require_admin,
 )
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.user import User
 from app.schemas.user import (
     CreateUserRequest,
@@ -88,6 +89,13 @@ def parse_user_query(request: Request) -> UserQuery:
         )
     is_active = None if is_active_raw is None else is_active_raw == "true"
 
+    is_locked_raw = params.get("is_locked")
+    if is_locked_raw is not None and is_locked_raw not in ("true", "false"):
+        _validation_error(
+            'is_locked: Invalid option: expected one of "true"|"false"'
+        )
+    is_locked = None if is_locked_raw is None else is_locked_raw == "true"
+
     search_raw = params.get("search")
     search = search_raw.strip() if search_raw is not None else None
     if not search:
@@ -98,6 +106,7 @@ def parse_user_query(request: Request) -> UserQuery:
         page_size=page_size,
         role=role,
         is_active=is_active,
+        is_locked=is_locked,
         search=search,
     )
 
@@ -113,9 +122,17 @@ async def list_users(
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_user(
     payload: CreateUserRequest,
+    request: Request,
+    current_user: User = Depends(require_admin),
     service: UserService = Depends(get_user_service),
 ) -> dict[str, Any]:
-    return {"user": await service.create_user(payload)}
+    return {
+        "user": await service.create_user(
+            payload,
+            actor_user_id=current_user.id,
+            context=get_request_context(request),
+        )
+    }
 
 
 @router.get("/{user_id}")
@@ -130,15 +147,25 @@ async def get_user(
 async def update_user(
     user_id: str,
     payload: UpdateUserRequest,
+    request: Request,
+    current_user: User = Depends(require_admin),
     service: UserService = Depends(get_user_service),
 ) -> dict[str, Any]:
-    return {"user": await service.update_user(user_id, payload)}
+    return {
+        "user": await service.update_user(
+            user_id,
+            payload,
+            actor_user_id=current_user.id,
+            context=get_request_context(request),
+        )
+    }
 
 
 @router.patch("/{user_id}/status")
 async def update_user_status(
     user_id: str,
     payload: UpdateUserStatusRequest,
+    request: Request,
     current_user: User = Depends(require_admin),
     service: UserService = Depends(get_user_service),
 ) -> dict[str, Any]:
@@ -147,6 +174,7 @@ async def update_user_status(
             user_id,
             payload.is_active,
             current_user.id,
+            context=get_request_context(request),
         )
     }
 
@@ -154,8 +182,13 @@ async def update_user_status(
 @router.delete("/{user_id}")
 async def delete_user(
     user_id: str,
+    request: Request,
     current_user: User = Depends(require_admin),
     service: UserService = Depends(get_user_service),
 ) -> dict[str, Any]:
     """Soft-delete an operator user. Admin-only; target role is re-checked here."""
-    return await service.delete_user(user_id, current_user.id)
+    return await service.delete_user(
+        user_id,
+        current_user.id,
+        context=get_request_context(request),
+    )

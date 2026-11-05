@@ -7,6 +7,8 @@ from fastapi import APIRouter, Depends, Request, status
 
 from app.core.dependencies import get_buffalo_service, require_roles
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
+from app.models.user import User
 from app.schemas.buffalo import (
     BuffaloQuery,
     CreateBuffaloRequest,
@@ -108,10 +110,18 @@ async def list_buffaloes(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_buffalo(
+    request: Request,
     payload: CreateBuffaloRequest,
+    user: User = Depends(require_roles("admin", "operator")),
     service: BuffaloService = Depends(get_buffalo_service),
 ) -> dict[str, Any]:
-    return {"buffalo": await service.create_buffalo(payload)}
+    return {
+        "buffalo": await service.create_buffalo(
+            payload,
+            actor_user_id=user.id,
+            context=get_request_context(request),
+        )
+    }
 
 
 @router.get("/{buffalo_id}")
@@ -125,7 +135,16 @@ async def get_buffalo(
 @router.put("/{buffalo_id}")
 async def update_buffalo(
     buffalo_id: str,
+    request: Request,
     payload: UpdateBuffaloRequest,
+    user: User = Depends(require_roles("admin", "operator")),
     service: BuffaloService = Depends(get_buffalo_service),
 ) -> dict[str, Any]:
-    return {"buffalo": await service.update_buffalo(buffalo_id, payload)}
+    return {
+        "buffalo": await service.update_buffalo(
+            buffalo_id,
+            payload,
+            actor_user_id=user.id,
+            context=get_request_context(request),
+        )
+    }

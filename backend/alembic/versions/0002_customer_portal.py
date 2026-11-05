@@ -9,7 +9,16 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 
-from alembic import op
+from app.db.migration_helpers import (
+    add_column_if_missing,
+    create_foreign_key_if_missing,
+    create_index_if_missing,
+    create_table_if_missing,
+    drop_column_if_exists,
+    drop_foreign_key_if_exists,
+    drop_index_if_exists,
+    drop_table_if_exists,
+)
 
 revision: str = "0002_customer_portal"
 down_revision: Union[str, Sequence[str], None] = "0001_baseline"
@@ -30,18 +39,7 @@ def timestamp_columns() -> tuple[sa.Column, sa.Column]:
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    inspector = sa.inspect(bind)
-    if not inspector.has_table('customers'):
-        import importlib.util
-        from pathlib import Path
-        bf = Path(__file__).parent / '0001_baseline_existing_schema.py'
-        if bf.exists():
-            spec = importlib.util.spec_from_file_location('baseline_0001', bf)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            mod.upgrade()
-    op.create_table(
+    create_table_if_missing(
         "customer_portal_accounts",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("customer_id", sa.Integer(), nullable=False),
@@ -74,25 +72,25 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_portal_accounts_customer_id",
         "customer_portal_accounts",
         ["customer_id"],
         unique=True,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_portal_accounts_email",
         "customer_portal_accounts",
         ["email"],
         unique=True,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_portal_accounts_is_active",
         "customer_portal_accounts",
         ["is_active"],
     )
 
-    op.create_table(
+    create_table_if_missing(
         "customer_portal_account_events",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("account_id", sa.Integer(), nullable=False),
@@ -117,13 +115,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_portal_account_events_account_id_created_at",
         "customer_portal_account_events",
         ["account_id", "created_at"],
     )
 
-    op.create_table(
+    create_table_if_missing(
         "customer_orders",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("order_no", sa.String(length=30), nullable=False),
@@ -174,31 +172,31 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_orders_order_no",
         "customer_orders",
         ["order_no"],
         unique=True,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_orders_customer_id_created_at",
         "customer_orders",
         ["customer_id", "created_at"],
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_orders_status_requested_date",
         "customer_orders",
         ["status", "requested_date"],
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_orders_requested_date_status",
         "customer_orders",
         ["requested_date", "status"],
     )
-    op.create_index("customer_orders_account_id", "customer_orders", ["account_id"])
-    op.create_index("customer_orders_reviewed_by", "customer_orders", ["reviewed_by"])
+    create_index_if_missing("customer_orders_account_id", "customer_orders", ["account_id"])
+    create_index_if_missing("customer_orders_reviewed_by", "customer_orders", ["reviewed_by"])
 
-    op.create_table(
+    create_table_if_missing(
         "customer_order_events",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("order_id", sa.Integer(), nullable=False),
@@ -233,13 +231,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_order_events_order_id_created_at",
         "customer_order_events",
         ["order_id", "created_at"],
     )
 
-    op.create_table(
+    create_table_if_missing(
         "customer_queries",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("query_no", sa.String(length=30), nullable=False),
@@ -286,25 +284,25 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_queries_query_no",
         "customer_queries",
         ["query_no"],
         unique=True,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_queries_customer_id_created_at",
         "customer_queries",
         ["customer_id", "created_at"],
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_queries_status_updated_at",
         "customer_queries",
         ["status", "updated_at"],
     )
-    op.create_index("customer_queries_assigned_to", "customer_queries", ["assigned_to"])
+    create_index_if_missing("customer_queries_assigned_to", "customer_queries", ["assigned_to"])
 
-    op.create_table(
+    create_table_if_missing(
         "customer_query_messages",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("query_id", sa.Integer(), nullable=False),
@@ -343,23 +341,23 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "customer_query_messages_query_id_created_at",
         "customer_query_messages",
         ["query_id", "created_at"],
     )
 
-    op.add_column(
+    add_column_if_missing(
         "sales",
         sa.Column("source_order_id", sa.Integer(), nullable=True),
     )
-    op.create_index(
+    create_index_if_missing(
         "sales_source_order_id",
         "sales",
         ["source_order_id"],
         unique=True,
     )
-    op.create_foreign_key(
+    create_foreign_key_if_missing(
         "fk_sales_source_order_id",
         "sales",
         "customer_orders",
@@ -371,13 +369,13 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_constraint("fk_sales_source_order_id", "sales", type_="foreignkey")
-    op.drop_index("sales_source_order_id", table_name="sales")
-    op.drop_column("sales", "source_order_id")
+    drop_foreign_key_if_exists("fk_sales_source_order_id", "sales")
+    drop_index_if_exists("sales_source_order_id", "sales")
+    drop_column_if_exists("sales", "source_order_id")
 
-    op.drop_table("customer_query_messages")
-    op.drop_table("customer_queries")
-    op.drop_table("customer_order_events")
-    op.drop_table("customer_orders")
-    op.drop_table("customer_portal_account_events")
-    op.drop_table("customer_portal_accounts")
+    drop_table_if_exists("customer_query_messages")
+    drop_table_if_exists("customer_queries")
+    drop_table_if_exists("customer_order_events")
+    drop_table_if_exists("customer_orders")
+    drop_table_if_exists("customer_portal_account_events")
+    drop_table_if_exists("customer_portal_accounts")

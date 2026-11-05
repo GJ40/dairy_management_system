@@ -12,6 +12,11 @@ Creates the ten core application tables in foreign-key dependency order:
   9. invoice_sales
   10. expenses
 
+Every object is created only when it is missing, so this revision is safe on
+the fresh MySQL volume created by ``docker compose up``, on the legacy
+Sequelize database (whose tables already exist and were stamped manually) and
+on a database left behind by an interrupted upgrade.
+
 Revision ID: 0001_baseline
 Revises:
 Create Date: 2026-10-28
@@ -20,7 +25,12 @@ Create Date: 2026-10-28
 from typing import Sequence, Union
 
 import sqlalchemy as sa
-from alembic import op
+
+from app.db.migration_helpers import (
+    create_index_if_missing,
+    create_table_if_missing,
+    drop_table_if_exists,
+)
 
 revision: str = "0001_baseline"
 down_revision: Union[str, Sequence[str], None] = None
@@ -45,7 +55,7 @@ def upgrade() -> None:
     # --------------------------------------------------------------------------
     # 1. users
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "users",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("full_name", sa.String(length=150), nullable=False),
@@ -74,15 +84,15 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("email", "users", ["email"], unique=True)
-    op.create_index("users_email", "users", ["email"], unique=True)
-    op.create_index("username", "users", ["username"], unique=True)
-    op.create_index("users_username", "users", ["username"], unique=True)
+    create_index_if_missing("email", "users", ["email"], unique=True)
+    create_index_if_missing("users_email", "users", ["email"], unique=True)
+    create_index_if_missing("username", "users", ["username"], unique=True)
+    create_index_if_missing("users_username", "users", ["username"], unique=True)
 
     # --------------------------------------------------------------------------
     # 2. buffaloes
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "buffaloes",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("tag_no", sa.String(length=50), nullable=False),
@@ -106,14 +116,14 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("tag_no", "buffaloes", ["tag_no"], unique=True)
-    op.create_index("buffaloes_tag_no", "buffaloes", ["tag_no"], unique=True)
-    op.create_index("buffaloes_status", "buffaloes", ["status"])
+    create_index_if_missing("tag_no", "buffaloes", ["tag_no"], unique=True)
+    create_index_if_missing("buffaloes_tag_no", "buffaloes", ["tag_no"], unique=True)
+    create_index_if_missing("buffaloes_status", "buffaloes", ["status"])
 
     # --------------------------------------------------------------------------
     # 3. customers
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "customers",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("name", sa.String(length=150), nullable=False),
@@ -136,13 +146,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("customers_is_active", "customers", ["is_active"])
-    op.create_index("customers_name", "customers", ["name"])
+    create_index_if_missing("customers_is_active", "customers", ["is_active"])
+    create_index_if_missing("customers_name", "customers", ["name"])
 
     # --------------------------------------------------------------------------
     # 4. expense_categories
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "expense_categories",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("name", sa.String(length=80), nullable=False),
@@ -156,15 +166,15 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("name", "expense_categories", ["name"], unique=True)
-    op.create_index(
+    create_index_if_missing("name", "expense_categories", ["name"], unique=True)
+    create_index_if_missing(
         "expense_categories_name", "expense_categories", ["name"], unique=True
     )
 
     # --------------------------------------------------------------------------
     # 5. milk_production
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "milk_production",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("buffalo_id", sa.Integer(), nullable=False),
@@ -196,26 +206,26 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "milk_production_buffalo_id_prod_date_session",
         "milk_production",
         ["buffalo_id", "prod_date", "session"],
         unique=True,
     )
-    op.create_index(
+    create_index_if_missing(
         "milk_production_prod_date", "milk_production", ["prod_date"]
     )
-    op.create_index(
+    create_index_if_missing(
         "milk_production_buffalo_id_prod_date",
         "milk_production",
         ["buffalo_id", "prod_date"],
     )
-    op.create_index("recorded_by", "milk_production", ["recorded_by"])
+    create_index_if_missing("recorded_by", "milk_production", ["recorded_by"])
 
     # --------------------------------------------------------------------------
     # 6. milk_wastage
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "milk_wastage",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("waste_date", sa.Date(), nullable=False),
@@ -239,13 +249,13 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("milk_wastage_waste_date", "milk_wastage", ["waste_date"])
-    op.create_index("recorded_by", "milk_wastage", ["recorded_by"])
+    create_index_if_missing("milk_wastage_waste_date", "milk_wastage", ["waste_date"])
+    create_index_if_missing("recorded_by", "milk_wastage", ["recorded_by"])
 
     # --------------------------------------------------------------------------
     # 7. sales
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "sales",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("customer_id", sa.Integer(), nullable=False),
@@ -284,16 +294,16 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("sales_sale_date", "sales", ["sale_date"])
-    op.create_index(
+    create_index_if_missing("sales_sale_date", "sales", ["sale_date"])
+    create_index_if_missing(
         "sales_customer_id_sale_date", "sales", ["customer_id", "sale_date"]
     )
-    op.create_index("recorded_by", "sales", ["recorded_by"])
+    create_index_if_missing("recorded_by", "sales", ["recorded_by"])
 
     # --------------------------------------------------------------------------
     # 8. invoices
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "invoices",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("invoice_no", sa.String(length=60), nullable=False),
@@ -332,12 +342,12 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("invoice_no", "invoices", ["invoice_no"], unique=True)
-    op.create_index(
+    create_index_if_missing("invoice_no", "invoices", ["invoice_no"], unique=True)
+    create_index_if_missing(
         "invoices_invoice_no", "invoices", ["invoice_no"], unique=True
     )
-    op.create_index("invoices_customer_id", "invoices", ["customer_id"])
-    op.create_index(
+    create_index_if_missing("invoices_customer_id", "invoices", ["customer_id"])
+    create_index_if_missing(
         "invoices_period_start_period_end",
         "invoices",
         ["period_start", "period_end"],
@@ -346,7 +356,7 @@ def upgrade() -> None:
     # --------------------------------------------------------------------------
     # 9. invoice_sales
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "invoice_sales",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("invoice_id", sa.Integer(), nullable=False),
@@ -369,23 +379,23 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index(
+    create_index_if_missing(
         "invoice_sales_sale_id_invoice_id_unique",
         "invoice_sales",
         ["invoice_id", "sale_id"],
         unique=True,
     )
-    op.create_index(
+    create_index_if_missing(
         "invoice_sales_sale_id", "invoice_sales", ["sale_id"], unique=True
     )
-    op.create_index(
+    create_index_if_missing(
         "invoice_sales_invoice_id", "invoice_sales", ["invoice_id"]
     )
 
     # --------------------------------------------------------------------------
     # 10. expenses
     # --------------------------------------------------------------------------
-    op.create_table(
+    create_table_if_missing(
         "expenses",
         sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
         sa.Column("category_id", sa.Integer(), nullable=False),
@@ -417,19 +427,19 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         **TABLE_OPTIONS,
     )
-    op.create_index("expenses_expense_date", "expenses", ["expense_date"])
-    op.create_index("expenses_category_id", "expenses", ["category_id"])
-    op.create_index("recorded_by", "expenses", ["recorded_by"])
+    create_index_if_missing("expenses_expense_date", "expenses", ["expense_date"])
+    create_index_if_missing("expenses_category_id", "expenses", ["category_id"])
+    create_index_if_missing("recorded_by", "expenses", ["recorded_by"])
 
 
 def downgrade() -> None:
-    op.drop_table("expenses")
-    op.drop_table("invoice_sales")
-    op.drop_table("invoices")
-    op.drop_table("sales")
-    op.drop_table("milk_wastage")
-    op.drop_table("milk_production")
-    op.drop_table("expense_categories")
-    op.drop_table("customers")
-    op.drop_table("buffaloes")
-    op.drop_table("users")
+    drop_table_if_exists("expenses")
+    drop_table_if_exists("invoice_sales")
+    drop_table_if_exists("invoices")
+    drop_table_if_exists("sales")
+    drop_table_if_exists("milk_wastage")
+    drop_table_if_exists("milk_production")
+    drop_table_if_exists("expense_categories")
+    drop_table_if_exists("customers")
+    drop_table_if_exists("buffaloes")
+    drop_table_if_exists("users")

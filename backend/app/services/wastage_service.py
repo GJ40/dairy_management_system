@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import status
 
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.models.user import User
 from app.repositories.wastage_repository import WastageRepository
 from app.schemas.wastage import (
@@ -15,6 +16,7 @@ from app.schemas.wastage import (
     serialize_wastage,
     serialize_wastage_detail,
 )
+from app.services.security_audit_service import SecurityAuditService
 from app.services.stock_service import StockService
 from app.utils.time import is_future_date, is_today
 
@@ -24,9 +26,38 @@ class WastageService:
         self,
         repository: WastageRepository,
         stock_service: StockService,
+        *,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.stock_service = stock_service
+        self.audit = audit
+
+    async def _record(
+        self,
+        *,
+        actor_user_id: int | None,
+        context: RequestContext | None,
+        wastage_id: int,
+        waste_date: str,
+        litres: Decimal,
+        reason: str,
+    ) -> None:
+        if self.audit is None or actor_user_id is None:
+            return
+        await self.audit.record(
+            event_type="wastage.recorded",
+            context=context,
+            actor_user_id=actor_user_id,
+            resource_type="milk_wastage",
+            resource_id=wastage_id,
+            metadata={
+                "wastage_id": wastage_id,
+                "waste_date": waste_date,
+                "litres": litres,
+                "reason": reason,
+            },
+        )
 
     def _assert_date_permission(self, waste_date: str, user: User) -> None:
         if is_future_date(waste_date):
@@ -46,6 +77,8 @@ class WastageService:
         self,
         payload: RecordWastageRequest,
         user: User,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         self._assert_date_permission(payload.waste_date, user)
         formatted_litres = Decimal(f"{payload.litres:.2f}")
@@ -62,6 +95,14 @@ class WastageService:
                 recorded_by=user.id,
             )
             await self.repository.flush()
+            await self._record(
+                actor_user_id=user.id,
+                context=context,
+                wastage_id=record.id,
+                waste_date=payload.waste_date,
+                litres=record.litres,
+                reason=record.reason,
+            )
             updated_stock = await self.stock_service.get_stock_for_date(
                 payload.waste_date
             )

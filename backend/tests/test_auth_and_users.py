@@ -5,12 +5,17 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 import jwt
-from fastapi import HTTPException
+from fastapi import BackgroundTasks, HTTPException
 from pydantic import ValidationError
 
 import app.models  # noqa: F401
 from app.core.config import settings
-from app.core.dependencies import get_user_repository
+from app.core.dependencies import (
+    get_login_security_service,
+    get_security_audit_service,
+    get_user_repository,
+)
+from app.core.request_context import RequestContext
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -158,6 +163,45 @@ class FakeUserRepository:
         return None
 
 
+class FakeAuditService:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    async def record(self, **kwargs: object) -> None:
+        self.events.append(kwargs)
+
+    async def record_standalone(self, **kwargs: object) -> bool:
+        self.events.append(kwargs)
+        return True
+
+
+class FakeLoginSecurityService:
+    def __init__(self) -> None:
+        self.successes: list[dict[str, object]] = []
+        self.failures: list[dict[str, object]] = []
+        self.refresh_failures: list[dict[str, object]] = []
+        self.logouts: list[dict[str, object]] = []
+        self.background_runs = 0
+
+    async def _mark_background(self) -> None:
+        self.background_runs += 1
+
+    async def record_success(self, **kwargs: object) -> None:
+        self.successes.append(kwargs)
+
+    async def record_failure(self, **kwargs: object) -> None:
+        self.failures.append(kwargs)
+        background = kwargs.get("background")
+        if isinstance(background, BackgroundTasks):
+            background.add_task(self._mark_background)
+
+    async def record_refresh_failure(self, **kwargs: object) -> None:
+        self.refresh_failures.append(kwargs)
+
+    async def record_logout(self, **kwargs: object) -> None:
+        self.logouts.append(kwargs)
+
+
 class SecurityTests(unittest.TestCase):
     def test_password_hash_and_verify(self) -> None:
         hashed = hash_password(PASSWORD)
@@ -229,7 +273,8 @@ class AuthServiceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.admin = make_user()
         self.repository = FakeUserRepository([self.admin])
-        self.service = AuthService(self.repository)
+        self.login_security = FakeLoginSecurityService()
+        self.service = AuthService(self.repository, self.login_security)
 
     async def test_login_success(self) -> None:
         result = await self.service.login("ADMIN@EXAMPLE.COM ", PASSWORD)
@@ -240,6 +285,55 @@ class AuthServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("password_hash", result["user"])
         payload = decode_access_token(result["access_token"])
         self.assertEqual(payload["id"], self.admin.id)
+        self.assertEqual(len(self.login_security.successes), 1)
+        success = self.login_security.successes[0]
+        self.assertEqual(success["scope"], "staff")
+        self.assertEqual(success["actor_user_id"], self.admin.id)
+        self.assertEqual(success["role"], "admin")
+
+    async def test_login_failures_record_reasons_and_actor(self) -> None:
+        with self.assertRaisesRegex(HTTPException, "Invalid email or password"):
+            await self.service.login("admin@example.com", "wrong")
+        self.assertEqual(self.login_security.failures[-1]["reason_code"], "bad_password")
+        self.assertEqual(self.login_security.failures[-1]["actor_user_id"], self.admin.id)
+        self.assertTrue(self.login_security.failures[-1]["alertable"])
+
+        with self.assertRaisesRegex(HTTPException, "Invalid email or password"):
+            await self.service.login("missing@example.com", PASSWORD)
+        self.assertEqual(self.login_security.failures[-1]["reason_code"], "unknown_email")
+        self.assertIsNone(self.login_security.failures[-1]["actor_user_id"])
+        self.assertFalse(self.login_security.failures[-1]["alertable"])
+
+        self.admin.is_active = False
+        with self.assertRaisesRegex(HTTPException, "deactivated"):
+            await self.service.login("admin@example.com", PASSWORD)
+        self.assertEqual(self.login_security.failures[-1]["reason_code"], "inactive")
+
+        self.admin.is_deleted = True
+        with self.assertRaisesRegex(HTTPException, "Invalid email or password"):
+            await self.service.login("admin@example.com", PASSWORD)
+        self.assertEqual(self.login_security.failures[-1]["reason_code"], "deleted")
+        self.assertFalse(self.login_security.failures[-1]["alertable"])
+
+    async def test_login_passes_request_context_and_background(self) -> None:
+        context = RequestContext(
+            request_id="b" * 32,
+            ip_address="203.0.113.9",
+            user_agent="pytest",
+            http_method="POST",
+            path="/api/v1/auth/login",
+        )
+        background = BackgroundTasks()
+        with self.assertRaisesRegex(HTTPException, "Invalid email or password"):
+            await self.service.login(
+                "admin@example.com",
+                "wrong",
+                context=context,
+                background=background,
+            )
+        failure = self.login_security.failures[-1]
+        self.assertIs(failure["context"], context)
+        self.assertIs(failure["background"], background)
 
     async def test_login_wrong_password(self) -> None:
         with self.assertRaisesRegex(HTTPException, "Invalid email or password"):
@@ -476,6 +570,36 @@ class UserServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             UpdateUserRequest(full_name=None)
 
+    async def test_privileged_actions_write_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = UserService(self.repository, audit)  # type: ignore[arg-type]
+
+        await service.create_user(
+            CreateUserRequest(
+                full_name="Audited User",
+                username="audited",
+                email="audited@example.com",
+                password="secret123",
+                role="operator",
+            ),
+            actor_user_id=self.admin.id,
+        )
+        self.assertEqual(audit.events[-1]["event_type"], "user.created")
+        self.assertEqual(
+            audit.events[-1]["metadata"]["target_user_id"],
+            audit.events[-1]["resource_id"],
+        )
+
+        await service.update_status(
+            str(self.operator.id),
+            False,
+            self.admin.id,
+        )
+        self.assertEqual(audit.events[-1]["event_type"], "user.deactivated")
+
+        await service.delete_user(str(self.operator.id), self.admin.id)
+        self.assertEqual(audit.events[-1]["event_type"], "user.deleted")
+
     async def test_delete_operator_soft_deletes(self) -> None:
         result = await self.service.delete_user(str(self.operator.id), self.admin.id)
         self.assertEqual(result["resource"], "users")
@@ -566,8 +690,15 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         def override_repository() -> UserRepository:
             return self.repository  # type: ignore[return-value]
 
+        self.login_security = FakeLoginSecurityService()
+        self.audit = FakeAuditService()
+
         app.dependency_overrides[get_db] = override_get_db
         app.dependency_overrides[get_user_repository] = override_repository
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
+        app.dependency_overrides[get_login_security_service] = lambda: (
+            self.login_security
+        )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
@@ -609,6 +740,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 "role",
                 "is_active",
                 "is_deleted",
+                "is_locked",
+                "locked_at",
+                "lock_reason",
                 "createdAt",
                 "updatedAt",
             ],
@@ -625,6 +759,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             response.json(),
             {"error": {"code": "UNAUTHORIZED", "message": "Invalid email or password"}},
         )
+        self.assertEqual(self.login_security.background_runs, 1)
 
     async def test_login_inactive(self) -> None:
         response = await self.client.post(
@@ -650,6 +785,9 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 "role",
                 "is_active",
                 "is_deleted",
+                "is_locked",
+                "locked_at",
+                "lock_reason",
                 "created_at",
                 "updated_at",
             ],

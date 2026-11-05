@@ -44,5 +44,15 @@ def is_today(date_str: str) -> bool:
     return date_str == get_business_date()
 
 
+def utc_now_naive() -> datetime:
+    """Current UTC time as a naive datetime for the audit ledger.
+
+    The database stores UTC without a timezone (like the existing business
+    timestamps store Asia/Kolkata without one). Keeping this helper separate
+    prevents new security rows from silently inheriting business-local time.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")

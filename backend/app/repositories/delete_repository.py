@@ -20,5 +20,11 @@ class DeleteRepository:
         if record is None:
             return None
         record.is_deleted = True
-        await self.session.commit()
+        await self.session.flush()
         return record
+
+    async def commit(self) -> None:
+        await self.session.commit()
+
+    async def rollback(self) -> None:
+        await self.session.rollback()

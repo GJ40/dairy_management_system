@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Index, Integer, String, text
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from app.db.base import Base
@@ -14,6 +16,7 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
         Index("users_email", "email", unique=True),
         Index("username", "username", unique=True),
         Index("users_username", "username", unique=True),
+        Index("users_lock_reason", "lock_reason"),
         {
             "mysql_engine": "InnoDB",
             "mysql_charset": "utf8mb4",
@@ -46,6 +49,20 @@ class User(TimestampMixin, SoftDeleteMixin, Base):
         default=0,
         server_default=text("0"),
     )
+    # Failed-login lockout state. `failed_login_count` counts the current burst
+    # inside `failed_login_first_at`'s window and resets on success or unlock.
+    failed_login_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    failed_login_first_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lock_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     production_records: Mapped[list["MilkProduction"]] = relationship(
         back_populates="recorder"

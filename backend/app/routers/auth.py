@@ -21,6 +21,7 @@ from app.core.dependencies import (
     get_password_reset_service,
 )
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.password_reset_token import RESET_SCOPE_STAFF
 from app.models.user import User
 from app.schemas.password_reset import ForgotPasswordRequest, ResetPasswordRequest
@@ -76,18 +77,44 @@ def _clear_session_cookies(response: Response) -> None:
     _delete_cookie(response, settings.session_hint_cookie_flags)
 
 
+def _error_body(exc: HTTPException) -> dict[str, Any]:
+    """Uniform error envelope, keeping structured fields such as retry times."""
+    detail = exc.detail if isinstance(exc.detail, dict) else {}
+    body: dict[str, Any] = {
+        key: value for key, value in detail.items() if key != "detail"
+    }
+    body["code"] = str(detail.get("code") or "UNAUTHORIZED")
+    body["message"] = str(detail.get("message") or exc.detail)
+    return body
+
+
+def _error_response(
+    exc: HTTPException,
+    *,
+    background: BackgroundTasks | None = None,
+) -> JSONResponse:
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={"error": _error_body(exc)},
+        headers=exc.headers,
+    )
+    if background is not None:
+        # FastAPI only attaches an injected BackgroundTasks object to a normal
+        # return value, not to an exception-handler response. Login failures
+        # raise, so the response is built here to keep the audit/alert task.
+        response.background = background
+    return response
+
+
 def _error_with_cookies(exc: HTTPException) -> JSONResponse:
     """Reject the refresh and drop the session cookies in the same response.
 
     Raising instead would hand the error to the exception handler, which builds
     a brand-new response and silently discards cookies set on the injected one.
     """
-    detail = exc.detail if isinstance(exc.detail, dict) else {}
-    code = str(detail.get("code") or "UNAUTHORIZED")
-    message = str(detail.get("message") or exc.detail)
     response = JSONResponse(
         status_code=exc.status_code,
-        content={"error": {"code": code, "message": message}},
+        content={"error": _error_body(exc)},
     )
     _clear_session_cookies(response)
     return response
@@ -110,9 +137,19 @@ def _error_with_cookies(exc: HTTPException) -> JSONResponse:
 async def login(
     payload: LoginRequest,
     response: Response,
+    request: Request,
+    background: BackgroundTasks,
     service: AuthService = Depends(get_auth_service),
-) -> dict[str, Any]:
-    session = await service.login(payload.email, payload.password)
+) -> Any:
+    try:
+        session = await service.login(
+            payload.email,
+            payload.password,
+            background=background,
+            context=get_request_context(request),
+        )
+    except HTTPException as exc:
+        return _error_response(exc, background=background)
     # The refresh token only ever leaves the API as an httpOnly cookie.
     _set_session_cookies(response, session.pop("refresh_token"))
     return session
@@ -134,11 +171,13 @@ async def refresh(
     request: Request,
     service: AuthService = Depends(get_auth_service),
 ) -> dict[str, Any]:
+    context = get_request_context(request)
     # The refresh token is delivered and read only as the httpOnly cookie.
     refresh_token = request.cookies.get(settings.refresh_cookie_name)
 
     if not refresh_token:
         # Nothing to refresh with, so any leftover hint cookie is stale.
+        await service.record_refresh_failure("cookie_missing", context)
         return _error_with_cookies(
             api_error(
                 status.HTTP_401_UNAUTHORIZED,
@@ -148,14 +187,23 @@ async def refresh(
         )
 
     try:
-        return await service.refresh(refresh_token)
+        return await service.refresh(refresh_token, context=context)
     except HTTPException as exc:
         # It was our cookie, so a rejected session must not linger.
         return _error_with_cookies(exc)
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, str]:
+async def logout(
+    request: Request,
+    response: Response,
+    background: BackgroundTasks,
+    service: AuthService = Depends(get_auth_service),
+) -> dict[str, str]:
+    await service.record_logout(
+        get_request_context(request),
+        background=background,
+    )
     _clear_session_cookies(response)
     return {"message": "Logged out"}
 
@@ -171,11 +219,14 @@ async def logout(response: Response) -> dict[str, str]:
 )
 async def forgot_password(
     payload: ForgotPasswordRequest,
+    request: Request,
     background: BackgroundTasks,
     service: PasswordResetService = Depends(get_password_reset_service),
 ) -> dict[str, str]:
     return await service.request_staff_reset(
-        payload.email, background=background
+        payload.email,
+        background=background,
+        context=get_request_context(request),
     )
 
 
@@ -205,6 +256,7 @@ async def validate_reset_password(
 )
 async def reset_password(
     payload: ResetPasswordRequest,
+    request: Request,
     background: BackgroundTasks,
     service: PasswordResetService = Depends(get_password_reset_service),
 ) -> dict[str, str]:
@@ -213,6 +265,7 @@ async def reset_password(
         payload.token,
         payload.password,
         background=background,
+        context=get_request_context(request),
     )
 
 

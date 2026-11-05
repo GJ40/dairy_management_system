@@ -62,6 +62,10 @@ class MiddlewareApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
         self.assertEqual(response.headers["x-frame-options"], "SAMEORIGIN")
 
+    async def test_request_id_header(self) -> None:
+        response = await self._health(True)
+        self.assertRegex(response.headers["x-request-id"], r"^[0-9a-f]{32}$")
+
     async def test_body_limit(self) -> None:
         response = await self.client.post(
             "/health",

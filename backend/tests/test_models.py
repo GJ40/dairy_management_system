@@ -27,6 +27,7 @@ EXPECTED_TABLES = {
     "milk_wastage",
     "password_reset_tokens",
     "sales",
+    "security_audit_events",
     "users",
 }
 
@@ -39,6 +40,8 @@ EXPECTED_SET_NULL_FKS = {
     "fk_customer_query_messages_sender_account_id",
     "fk_customer_query_messages_sender_user_id",
     "fk_sales_source_order_id",
+    "fk_security_audit_events_actor_account_id",
+    "fk_security_audit_events_actor_user_id",
 }
 
 NO_UPDATED_AT_TABLES = {
@@ -48,6 +51,7 @@ NO_UPDATED_AT_TABLES = {
     # Token rows are written once and only ever flipped to used; like the
     # event tables above they are append-only and carry no updated_at.
     "password_reset_tokens",
+    "security_audit_events",
 }
 
 
@@ -61,7 +65,27 @@ class ModelSchemaTests(unittest.TestCase):
 
     def test_users_duplicate_unique_indexes_preserved(self) -> None:
         names = {index.name for index in Base.metadata.tables["users"].indexes}
-        self.assertEqual(names, {"email", "username", "users_email", "users_username"})
+        self.assertEqual(
+            names,
+            {
+                "email",
+                "username",
+                "users_email",
+                "users_username",
+                "users_lock_reason",
+            },
+        )
+
+    def test_login_lockout_columns_on_both_account_tables(self) -> None:
+        for name in ("users", "customer_portal_accounts"):
+            columns = Base.metadata.tables[name].c
+            for column in (
+                "failed_login_count",
+                "failed_login_first_at",
+                "locked_at",
+                "lock_reason",
+            ):
+                self.assertIn(column, columns, name)
 
     def test_buffalo_duplicate_unique_indexes_preserved(self) -> None:
         names = {index.name for index in Base.metadata.tables["buffaloes"].indexes}
@@ -84,7 +108,7 @@ class ModelSchemaTests(unittest.TestCase):
             for table in Base.metadata.tables.values()
             for fk in table.foreign_keys
         }
-        self.assertEqual(len(foreign_keys), 26)
+        self.assertEqual(len(foreign_keys), 28)
         for name, fk in foreign_keys.items():
             self.assertEqual(fk.onupdate, "CASCADE", name)
             expected = "SET NULL" if name in EXPECTED_SET_NULL_FKS else "CASCADE"
@@ -141,6 +165,25 @@ class ModelSchemaTests(unittest.TestCase):
                 table.dialect_options["mysql"]["collate"],
                 "utf8mb4_0900_ai_ci",
             )
+
+    def test_security_audit_event_is_append_only(self) -> None:
+        table = Base.metadata.tables["security_audit_events"]
+        self.assertIn("metadata", table.c)
+        self.assertNotIn("updated_at", table.c)
+        self.assertNotIn("is_deleted", table.c)
+        self.assertIsNotNone(table.c.created_at.default)
+        self.assertEqual(
+            {index.name for index in table.indexes},
+            {
+                "security_audit_events_actor_account_id_created_at",
+                "security_audit_events_actor_user_id_created_at",
+                "security_audit_events_created_at",
+                "security_audit_events_event_type_created_at",
+                "security_audit_events_ip_created_at",
+                "security_audit_events_request_id",
+                "security_audit_events_resource_created_at",
+            },
+        )
 
     def test_email_normalization(self) -> None:
         user = User(email="  Admin@Example.COM ")

@@ -16,6 +16,7 @@ from app.core.dependencies import (
     get_db,
     get_invoice_service,
     get_sale_repository,
+    get_security_audit_service,
     get_stock_lock_service,
     get_stock_service,
 )
@@ -25,6 +26,7 @@ from app.main import app
 from app.schemas.customer_orders_staff import StaffOrderQuery
 from app.services.customer_order_service import CustomerOrderService
 from app.utils.time import business_now
+from tests.audit_helpers import FakeAuditService
 from tests.test_customer_portal_auth import FakeCustomerRepository, FakeSession
 from tests.test_customer_portal_orders import (
     FakeOrderRepository,
@@ -188,6 +190,29 @@ class StaffOrderServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.stock.calls[0][0], order.requested_date.isoformat())
         self.assertEqual(self.stock.calls[0][1], order.quantity_litres)
         self.assertIsNotNone(self.stock.calls[0][2])
+
+    async def test_staff_order_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = CustomerOrderService(  # type: ignore[arg-type]
+            self.orders,
+            self.customers,
+            stock_service=self.stock,
+            sale_repository=self.sales,
+            invoice_service=self.invoices,
+            stock_lock=self.lock,
+            audit=audit,
+        )
+        order = self._add()
+        await service.approve(self.admin, order.id, None)
+        self.assertEqual(audit.records[-1]["event_type"], "order.approved")
+
+        approved = self._add(status_="approved")
+        await service.fulfil(self.admin, approved.id)
+        self.assertEqual(audit.records[-1]["event_type"], "order.fulfilled")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["order_id"], approved.id
+        )
+        self.assertIn("sale_id", audit.records[-1]["metadata"])
 
     async def test_approve_insufficient_stock_keeps_submitted(self) -> None:
         self.stock.available = False
@@ -406,6 +431,8 @@ class StaffOrderApiTests(unittest.IsolatedAsyncioTestCase):
         )
         app.dependency_overrides[get_stock_service] = lambda: self.stock
         app.dependency_overrides[get_stock_lock_service] = FakeStockLock
+        self.audit = FakeAuditService()
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         app.dependency_overrides[get_sale_repository] = lambda: self.sales
         app.dependency_overrides[get_invoice_service] = lambda: self.invoices
 

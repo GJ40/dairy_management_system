@@ -193,6 +193,78 @@ class Settings(BaseSettings):
         validation_alias="ADMIN_PASSWORD",
     )
 
+    # --- Security audit -------------------------------------------------
+    # Honouring X-Forwarded-For without a trusted proxy lets any client spoof
+    # its address, so this stays off until the deployment opts in.
+    trust_proxy: bool = Field(default=False, validation_alias="TRUST_PROXY")
+    audit_retention_days: int = Field(
+        default=365,
+        ge=30,
+        le=3650,
+        validation_alias="AUDIT_RETENTION_DAYS",
+    )
+
+    # --- Failed-login alerts -------------------------------------------
+    failed_login_alert_enabled: bool = Field(
+        default=True,
+        validation_alias="FAILED_LOGIN_ALERT_ENABLED",
+    )
+    failed_login_alert_threshold: int = Field(
+        default=5,
+        ge=1,
+        le=100,
+        validation_alias="FAILED_LOGIN_ALERT_THRESHOLD",
+    )
+    failed_login_alert_window_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=1440,
+        validation_alias="FAILED_LOGIN_ALERT_WINDOW_MINUTES",
+    )
+    failed_login_alert_cooldown_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=10080,
+        validation_alias="FAILED_LOGIN_ALERT_COOLDOWN_MINUTES",
+    )
+
+    # --- Login lockout --------------------------------------------------
+    # Temporary cooldown: after this many failures the account is refused for
+    # `login_cooldown_minutes` and the owner is emailed. The clock starts on the
+    # attempt that reaches the threshold, so the pause always lasts the full
+    # duration. Attempts during the cooldown are refused and never counted, so
+    # they cannot escalate into a lock. A burst that started a cooldown is
+    # therefore given `login_lockout_window_minutes + login_cooldown_minutes`
+    # before it expires.
+    login_cooldown_threshold: int = Field(
+        default=5,
+        ge=2,
+        le=100,
+        validation_alias="LOGIN_COOLDOWN_THRESHOLD",
+    )
+    login_cooldown_minutes: int = Field(
+        default=5,
+        ge=1,
+        le=1440,
+        validation_alias="LOGIN_COOLDOWN_MINUTES",
+    )
+    # Hard lock: reaching this many counted failures deactivates the account
+    # until an administrator unlocks it. The lock has no expiry of its own.
+    login_lockout_threshold: int = Field(
+        default=10,
+        ge=2,
+        le=1000,
+        validation_alias="LOGIN_LOCKOUT_THRESHOLD",
+    )
+    # Counting window only: how far back a burst of failures is measured. It
+    # never expires a lock, which lasts until an administrator clears it.
+    login_lockout_window_minutes: int = Field(
+        default=15,
+        ge=1,
+        le=1440,
+        validation_alias="LOGIN_LOCKOUT_WINDOW_MINUTES",
+    )
+
     # --- Server limits --------------------------------------------------
     api_v1_prefix: str = Field(default="/api/v1", validation_alias="API_V1_PREFIX")
     body_limit_bytes: int = Field(

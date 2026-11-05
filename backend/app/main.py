@@ -14,6 +14,7 @@ from app.core.middleware import (
     RequestLoggingMiddleware,
     SecurityHeadersMiddleware,
 )
+from app.core.request_context import RequestContextMiddleware
 from app.db.session import dispose_engine
 from app.routers import (
     auth,
@@ -32,6 +33,7 @@ from app.routers import (
     production,
     reports,
     sales,
+    security_audit,
     stock,
     users,
     wastage,
@@ -73,6 +75,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(RequestLoggingMiddleware)
+    app.add_middleware(
+        RequestContextMiddleware,
+        trust_proxy=settings.trust_proxy,
+    )
 
     register_exception_handlers(app)
 
@@ -92,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(expenses.router, prefix=settings.api_v1_prefix)
     app.include_router(expenses.alias_router, prefix=settings.api_v1_prefix)
     app.include_router(reports.router, prefix=settings.api_v1_prefix)
+    app.include_router(security_audit.router, prefix=settings.api_v1_prefix)
     app.include_router(customer_auth.router, prefix=settings.api_v1_prefix)
     app.include_router(customer_orders.router, prefix=settings.api_v1_prefix)
     app.include_router(customer_portal.router, prefix=settings.api_v1_prefix)
