@@ -99,7 +99,7 @@ The repository contains two historical checkpoints across its Git branches: the 
 - **Package & Dependency Manager:** `uv` (`pyproject.toml`, `uv.lock`)
 - **ORM & Data Layer:** SQLAlchemy `2.1.6` (Async Engine with `asyncmy` driver)
 - **Database Engine:** MySQL 8 (`utf8mb4` character set, InnoDB engine)
-- **Database Migrations:** Alembic `1.20.1` (Revisions 0001 through 0004)
+- **Database Migrations:** Alembic `1.20.1` (Revisions 0001 through 0006, idempotent)
 - **Security & Tokens:** `pyjwt` 2.15.1, `bcrypt` 5.0.0, cryptographic `secrets` module
 - **PDF Generation:** ReportLab `5.1.0` (vector drawing, standard fonts, tabular formatting)
 - **Email Service:** `emails` 1.1.3 (asynchronous SMTP delivery via FastAPI `BackgroundTasks`)
@@ -531,6 +531,50 @@ erDiagram
    - Forgot-password endpoints execute email delivery via `FastAPI.BackgroundTasks`, preventing response-time leakage of registered account addresses.
 6. **Concurrency Protection:**
    - Stock updates are serialized using MySQL advisory locks (`GET_LOCK`), preventing race conditions when concurrent sales or order fulfilments take place.
+7. **Failed-Attempt Cooldown and Lockout:**
+   - A burst of **5 wrong passwords** (`LOGIN_COOLDOWN_THRESHOLD`) starts a **5-minute sign-in pause** (`LOGIN_COOLDOWN_MINUTES`) for that account. During the pause the API answers `429 Too Many Attempts`, refuses the attempt without checking the password, and does **not** count it, so hammering the form cannot escalate into a lock.
+   - The pause is derived from `failed_login_count` + `failed_login_first_at` stored on the account row — not from an in-memory timer — so it survives a closed tab, a reload, another browser, a backend restart and a redeploy. Browsers get the remaining seconds back on every attempt.
+   - On the failure that reaches `LOGIN_LOCKOUT_THRESHOLD` (10) inside `LOGIN_LOCKOUT_WINDOW_MINUTES` (15), the account is deactivated (`locked_at`, `lock_reason = failed_login_attempts`) and every session is revoked. **This lock has no timer:** it never expires on its own, and only an administrator can clear it from the Users or Portal Accounts page. Every lock and unlock is written to the security audit ledger.
+   - `LOGIN_LOCKOUT_WINDOW_MINUTES` is only the *counting* window — how far back a burst of failures is measured. It is not a lock duration.
+8. **Config-Driven Security Copy:**
+   - Every cooldown message, countdown and alert email is composed from `LOGIN_COOLDOWN_MINUTES` and `LOGIN_COOLDOWN_THRESHOLD` at request time. Changing those two values in `backend_py/.env` updates the logged text, the API error message, the login-page countdown and the alert email together, with no code change.
+9. **Transactional Email Design:**
+   - All transactional mail shares one responsive, table-based shell with inline styles, no external images or scripts: hidden preheader, brand bar with a colour-coded status pill, accent rule, heading, two-column fact table, numbered next steps, tinted callouts (info / success / warning / danger) and a plain-text alternative that mirrors the HTML.
+
+### Login Cooldown and Lockout (staff and customer portal)
+
+Both sign-in surfaces (`/login` and `/portal/login`) share the same rules and the same response contract:
+
+| Event | HTTP | `error.code` | Extra fields |
+|---|---|---|---|
+| Wrong password before the threshold | `401` | `UNAUTHORIZED` | — |
+| Threshold reached, pause running | `429` | `TOO_MANY_ATTEMPTS` | `retry_after_seconds`, `cooldown_minutes`, `cooldown_threshold` (+ `Retry-After` header) |
+| Hard lock on reaching `LOGIN_LOCKOUT_THRESHOLD` | `403` | `ACCOUNT_LOCKED` | `lockout_threshold`, `requires_admin_unlock` |
+
+`ACCOUNT_LOCKED` is a terminal state, not a longer cooldown: it carries no `retry_after_seconds`, shows no countdown, and is not cleared by time passing or by a correct password. Only an administrator unlock re-activates the account and resets the failure counter to zero.
+
+Sample 429 body (values follow `.env`, they are not hard-coded):
+
+```json
+{
+  "error": {
+    "code": "TOO_MANY_ATTEMPTS",
+    "message": "Too many failed sign-in attempts. Sign-in is paused for 5 minutes after 5 failed attempts. Try again in 3 minutes 12 seconds.",
+    "retry_after_seconds": 192,
+    "cooldown_minutes": 5,
+    "cooldown_threshold": 5
+  }
+}
+```
+
+How the pause survives a closed tab:
+
+1. The count is persisted on the account row when the threshold is hit, so the server keeps refusing attempts even with no browser open.
+2. The login page stores only the **deadline** returned by the server in `localStorage` (`dairy:login-cooldown:staff` / `dairy:login-cooldown:customer`), never the password or a token, and derives the countdown from it on mount.
+3. Reopening the tab reads that deadline, shows the amber *Sign-in paused* notice with a live `m:ss` countdown, disables the submit button and keeps the form disabled until the clock reaches zero.
+4. Even if that storage entry is missing or cleared, the next submit is still refused by the server with a fresh `retry_after_seconds`, which restarts the visible countdown. The server is always authoritative; the stored deadline is display-only.
+
+The cooldown clock starts **when the threshold attempt happens**, not at the first failure of the burst. Without that, five guesses spaced across the window would finish after a pause measured from the first attempt had already expired, and no pause would ever be felt.
 
 ### Authentication and Authorization Flow
 
@@ -680,14 +724,27 @@ npm run dev
 | `DB_PASSWORD` | `your_password` | Database password |
 | `DB_LOGGING` | `false` | Enable/disable SQL query echo logging |
 | `DB_POOL_SIZE` | `10` | SQLAlchemy connection pool size |
+| `DB_MAX_OVERFLOW` | `0` | Extra connections allowed above the pool size |
+| `DB_POOL_TIMEOUT` | `30` | Seconds to wait for a free pooled connection |
+| `DB_POOL_RECYCLE` | `1800` | Recycle pooled connections this many seconds after checkout |
 | `JWT_SECRET` | `minimum_32_characters_secret` | Secret key for signing staff JWTs |
 | `ACCESS_TOKEN_EXPIRE_MINUTES` | `30` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRE_MINUTES` | `480` | Refresh token lifetime (8 hours) |
+| `REFRESH_COOKIE_NAME` | `dairy_refresh_token` | Name of the httpOnly staff refresh cookie |
+| `REFRESH_COOKIE_PATH` | `/api/v1` | Cookie path; widened automatically if narrower than the API prefix |
+| `REFRESH_COOKIE_DOMAIN` | `""` | Cookie domain; empty means the current host |
+| `REFRESH_COOKIE_SAMESITE` | `lax` | `lax`, `strict` or `none` (none requires a secure cookie) |
+| `REFRESH_COOKIE_SECURE` | `""` | Empty auto-enables it when `NODE_ENV=production` |
+| `SESSION_HINT_COOKIE_NAME` | `dairy_session` | Secret-free cookie the SPA checks before probing `/auth/refresh` |
+| `BODY_LIMIT_BYTES` | `1048576` | Maximum accepted request body size |
+| `BCRYPT_ROUNDS` | `10` | Password hashing cost |
 | `ADMIN_NAME` | `System Admin` | Full name for bootstrap administrator |
 | `ADMIN_USERNAME` | `admin` | Username for bootstrap administrator |
 | `ADMIN_EMAIL` | `admin@dairyfarm.com` | Login email for bootstrap administrator |
 | `ADMIN_PASSWORD` | `AdminSecurePass123` | Password for bootstrap administrator |
 | `CUSTOMER_JWT_SECRET` | `distinct_32_char_secret` | Distinct signing key for customer tokens |
+| `CUSTOMER_REFRESH_COOKIE_NAME` | `dairy_customer_refresh_token` | Name of the httpOnly customer refresh cookie |
+| `CUSTOMER_SESSION_HINT_COOKIE_NAME` | `dairy_customer_session` | Secret-free cookie the customer SPA checks before refreshing |
 | `CUSTOMER_ACTIVATION_TTL_HOURS` | `72` | Activation token validity duration |
 | `CUSTOMER_ORDER_MIN_LITRES` | `1.00` | Minimum milk order volume |
 | `CUSTOMER_ORDER_MAX_LITRES` | `500.00` | Maximum volume per single order |
@@ -698,10 +755,22 @@ npm run dev
 | `SMTP_PORT` | `1025` | SMTP port |
 | `SMTP_USER` | `""` | SMTP username |
 | `SMTP_PASSWORD` | `""` | SMTP password |
-| `SMTP_USE_TLS` | `false` | Enable TLS encryption |
+| `SMTP_USE_TLS` | `false` | Enable STARTTLS (typical for port 587) |
+| `SMTP_USE_SSL` | `false` | Enable implicit SSL (typical for port 465); enable at most one of TLS/SSL |
+| `SMTP_TIMEOUT_SECONDS` | `10` | Socket timeout for SMTP conversations |
 | `MAIL_FROM_EMAIL` | `no-reply@dairyfarm.com` | Sender address for transactional emails |
 | `MAIL_FROM_NAME` | `AmritDhara Dairy` | Sender display name |
 | `PASSWORD_RESET_TTL_MINUTES` | `30` | Password reset link validity duration |
+| `LOGIN_COOLDOWN_THRESHOLD` | `5` | Wrong passwords that start the temporary sign-in pause |
+| `LOGIN_COOLDOWN_MINUTES` | `5` | Length of the sign-in pause; embedded in the 429 message and the login-page countdown |
+| `LOGIN_LOCKOUT_THRESHOLD` | `10` | Counted failures that hard-lock the account; the lock has no timer and only an administrator can clear it |
+| `LOGIN_LOCKOUT_WINDOW_MINUTES` | `15` | Counting window for a burst of failures; it never expires a lock |
+| `FAILED_LOGIN_ALERT_ENABLED` | `true` | Send the failed-sign-in alert email |
+| `FAILED_LOGIN_ALERT_THRESHOLD` | `5` | Failures in the window before the alert email is sent |
+| `FAILED_LOGIN_ALERT_WINDOW_MINUTES` | `15` | How far back the alert email counts attempts |
+| `FAILED_LOGIN_ALERT_COOLDOWN_MINUTES` | `15` | Minimum gap between two alert emails for the same account |
+
+Every variable above is also passed through to the container by the `environment:` block in `docker-compose.yaml`, with the same default, except two that Docker has to choose differently: `DB_HOST` is always `db` (the service name), and `SMTP_HOST` defaults to empty so mail stays disabled until you point it at a reachable server. Variables that only exist for Compose (`RUN_MIGRATIONS`, `RUN_SEED`, `DB_WAIT_*`, host ports) are listed in [section 16](#16-docker-setup-and-deployment-docker-compose).
 
 ### Frontend (`frontend/.env`)
 
@@ -724,12 +793,20 @@ cd backend_py
 # Check current revision status
 uv run alembic current
 
-# Upgrade schema to the latest revision (0001 -> 0004)
+# Upgrade schema to the latest revision (0001 -> 0006)
 uv run alembic upgrade head
 
 # Rollback one migration revision
 uv run alembic downgrade -1
 ```
+
+Every revision is idempotent: it creates only the tables, columns, indexes and
+foreign keys that are missing (`app/db/migration_helpers.py`). Running
+`alembic upgrade head` again — on a fresh volume, on the legacy Sequelize
+database, or after an interrupted run — is a no-op instead of failing with
+"table already exists", "duplicate column name" or "duplicate key name". The
+Docker image does this automatically at startup; see
+[section 16](#16-docker-setup-and-deployment-docker-compose).
 
 ### Seeding Scripts
 - **Base Seeder:** Creates the 6 standard PRD expense categories (`feed`, `labour`, `medicine`, `electricity`, `transport`, `other`) and boots the initial `Admin` user defined in `.env`.
@@ -769,7 +846,7 @@ The complete Dairy Management System can be launched using Docker Compose withou
 
 ### Architecture in Docker
 - **`db`:** Official MySQL 8 image (`mysql:8.0`), persistent data volume (`dairy_mysql_data`), internal health check (`mysqladmin ping`).
-- **`backend`:** Python 3.11 Alpine container running Uvicorn ASGI server on port `8000`.
+- **`backend`:** Python 3.11 Alpine container running Uvicorn ASGI server on port `8000`. It starts through `docker-entrypoint.sh`, which waits for MySQL, applies the idempotent Alembic migrations, ensures the base seed data, and then execs Uvicorn.
 - **`frontend`:** Multi-stage production build running on Alpine Nginx on port `80` (or mapped to `5173` / `80`).
 
 ---
@@ -777,11 +854,43 @@ The complete Dairy Management System can be launched using Docker Compose withou
 ### Step-by-Step Setup Guide
 
 #### Step 1: Prepare Environment Files
-Ensure your root or service environment variables are configured. Copy `.env.example` to `.env` in `backend_py/`:
-```bash
-cp backend_py/.env.example backend_py/.env
+Docker Compose reads a `.env` file **in the project root** (or variables from your shell) and substitutes them into the `environment:` block of `docker-compose.yaml`. It does **not** read `backend_py/.env` — that file is for running the API natively and is excluded from the image by `.dockerignore`.
+
+Every variable has a working default in `docker-compose.yaml`, so a first `docker compose up` needs no `.env` at all. To override anything, create a root `.env` containing only the overrides you care about — do not copy `backend_py/.env.example` there, its first line is a `[TEMPLATE]` marker and its `DB_HOST`/`DB_PORT`/SMTP values target a native install:
+```ini
+# .env (project root) - docker compose only
+# DB_PASSWORD must match DB_ROOT_PASSWORD: the backend connects as root, and
+# the db health check authenticates as root too.
+DB_ROOT_PASSWORD=change-me
+DB_PASSWORD=change-me
+JWT_SECRET=<32+ random characters>
+CUSTOMER_JWT_SECRET=<different 32+ random characters>
+ADMIN_PASSWORD=change-me
+# A mail container on dairy_network. Do not use 127.0.0.1 here: inside the
+# backend container that is the container itself, not your host.
+SMTP_HOST=mailpit
 ```
-*(In Docker Compose, database host is automatically routed to the `db` service container).*
+*(In Docker Compose, the database host is automatically routed to the `db` service container, so leave `DB_HOST` alone — it is not read from the root `.env`.)*
+
+#### Compose-only Variables
+These control the containers themselves and are not read by the API when it runs natively. Set them in the root `.env` or in front of the command; the default works for a normal first setup.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RUN_MIGRATIONS` | `true` | Run `alembic upgrade head` at container start. Set `false` when you manage the schema yourself. |
+| `RUN_SEED` | `true` | Ensure the base seed data (admin user, expense categories) at container start. |
+| `DB_WAIT_ATTEMPTS` | `60` | Connection probes before giving up on MySQL. Each probe is `DB_WAIT_INTERVAL` seconds apart. |
+| `DB_WAIT_INTERVAL` | `2` | Seconds between probes; total budget is `DB_WAIT_ATTEMPTS x DB_WAIT_INTERVAL`. |
+| `FRONTEND_PORT` | `5173` | Host port mapped to the Nginx container (80). |
+| `BACKEND_PORT` | `8000` | Host port mapped to Uvicorn (8000). |
+| `DB_PORT` | `3306` | Host port mapped to MySQL (3306). |
+| `DB_ROOT_PASSWORD` | `root` | MySQL root password used by the `db` service and its health check. |
+| `DB_NAME` | `dairy_db` | Database created on first start and used by the backend. |
+| `VITE_API_BASE_URL` | `/api/v1` | API prefix baked into the frontend bundle. |
+| `SESSION_HINT_COOKIE_NAME` | `dairy_session` | Read by the backend *and* baked into the frontend build so both agree on the cookie name. |
+| `CUSTOMER_SESSION_HINT_COOKIE_NAME` | `dairy_customer_session` | Same, for the customer portal cookie. |
+
+Changing `SESSION_HINT_COOKIE_NAME` / `CUSTOMER_SESSION_HINT_COOKIE_NAME` or `VITE_*` requires a frontend rebuild (`docker compose up -d --build frontend`) because they are compile-time Vite values.
 
 #### Step 2: Build and Start Containers
 From the project root directory, build and launch all containers in detached mode:
@@ -795,24 +904,32 @@ Check that all three containers (`db`, `backend`, `frontend`) are up and running
 docker compose ps
 ```
 
-#### Step 4: Run Database Migrations in the Container
-Once the database container is healthy, apply the Alembic migrations inside the running backend container:
+#### Step 4: Migrations and Seed Data (Automatic)
+No manual step is required. `docker-entrypoint.sh` inside the backend image waits for MySQL, runs `alembic upgrade head` and ensures the base seed data (admin user, expense categories) before starting Uvicorn. Watch it happen with:
 ```bash
-docker compose exec backend uv run alembic upgrade head
+docker compose logs -f backend
 ```
 
-#### Step 5: Seed the Initial Data
-Create the default admin user and expense categories:
+Migrations are idempotent, so restarting the stack or re-running them on an existing volume never fails with "table already exists" or "duplicate column name".
+
+To run them by hand (the virtualenv is already on `PATH`; do **not** prefix with `uv run`, the image does not ship `uv.lock`):
 ```bash
-docker compose exec backend uv run python -m app.seeders.base_seed
+docker compose exec backend alembic current
+docker compose exec backend alembic upgrade head
+docker compose exec backend python -m app.seeders.base_seed
 ```
 
 *(Optional)* Seed the rich Indian dairy demo dataset:
 ```bash
-docker compose exec backend uv run python -m app.seeders.fake_indian_data
+docker compose exec backend python -m app.seeders.fake_indian_data
 ```
 
-#### Step 6: Access the Application
+To skip the automatic steps, start the stack with `RUN_MIGRATIONS=false` / `RUN_SEED=false`:
+```bash
+RUN_MIGRATIONS=false docker compose up -d
+```
+
+#### Step 5: Access the Application
 Open your browser to:
 - **Staff & Customer Web App:** `http://localhost:5173` (or `http://localhost:80` depending on port mapping)
 - **FastAPI Interactive Docs:** `http://localhost:8000/api/v1/docs`
@@ -832,6 +949,19 @@ Open your browser to:
 | `docker compose restart backend` | Restart only the FastAPI backend container |
 | `docker compose down` | Stop and remove containers (preserves database data) |
 | `docker compose down -v` | Stop containers and **delete all database volumes** (fresh start) |
+
+---
+
+### Troubleshooting a First Setup
+
+| Symptom | Cause and fix |
+|---|---|
+| `Can't connect to MySQL server on 'db'` | MySQL was still initialising. The entrypoint retries for up to 2 minutes (`DB_WAIT_ATTEMPTS`, default 60 attempts of 2s). Raise it on a slow disk, or check `docker compose logs db`. |
+| `Table 'users' already exists` / `duplicate column name` | Only possible on a database that was migrated before this hardening. The current revisions probe the schema first, so `docker compose exec backend alembic upgrade head` now completes. If it still fails, the volume holds a partial manual schema: `docker compose down -v` and start again. |
+| `dependency failed to start: container dairy_db is unhealthy` | The database never passed its health check. `docker compose logs db` shows the reason (usually insufficient disk or a port clash on 3306). |
+| `No module named alembic` inside the container | The command was prefixed with `uv run`, which tries to resolve dependencies without `uv.lock`. Drop the prefix. |
+| `Can't locate revision identified by '...'` | The volume was stamped with a revision id that no longer exists in `backend_py/alembic/versions/`. Check `backend_py/alembic heads`, then either `docker compose down -v` for a fresh dev database or `docker compose exec backend alembic stamp head` if the schema really is current. |
+| Schema looks wrong after pulling new revisions | `docker compose exec backend alembic current` should equal `alembic heads`. A missing revision means the entrypoint did not run; restart the backend container. |
 
 ---
 

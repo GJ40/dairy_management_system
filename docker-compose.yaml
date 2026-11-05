@@ -17,7 +17,8 @@ services:
     command:
       - --default-authentication-plugin=mysql_native_password
       - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
+      # Matches the table collation the migrations create (MySQL 8 default).
+      - --collation-server=utf8mb4_0900_ai_ci
     environment:
       MYSQL_DATABASE: ${DB_NAME:-dairy_db}
       # MYSQL_USER: ${DB_USER:-root}
@@ -30,11 +31,13 @@ services:
     networks:
       - dairy_network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${DB_ROOT_PASSWORD:-root}"]
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$${MYSQL_ROOT_PASSWORD}\" --silent"]
       interval: 5s
       timeout: 5s
-      retries: 10
-      start_period: 15s
+      retries: 20
+      # MySQL initialises the data directory on the first run; on slow disks
+      # that takes longer than the old 15s grace period.
+      start_period: 45s
 
   # ----------------------------------------------------------------------------
   # 2. Application Backend Service (FastAPI)
@@ -45,7 +48,9 @@ services:
       dockerfile: Dockerfile
     container_name: dairy_backend
     restart: unless-stopped
-    command: sh -c "alembic upgrade head && python -m app.seeders.base_seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    # No `command:` here on purpose: the image's CMD runs docker-entrypoint.sh,
+    # which waits for MySQL, applies the idempotent migrations and seeds before
+    # starting Uvicorn. Overriding the command would skip those steps.
     depends_on:
       db:
         condition: service_healthy
@@ -62,12 +67,53 @@ services:
       DB_USER: ${DB_USER:-root}
       DB_PASSWORD: ${DB_PASSWORD:-root}
       DB_LOGGING: ${DB_LOGGING:-false}
-      DB_POOL_SIZE: 10
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-0}
+      DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}
+      # MySQL closes idle connections after wait_timeout (8h by default);
+      # recycling earlier avoids "MySQL server has gone away" on a long-lived
+      # container.
+      DB_POOL_RECYCLE: ${DB_POOL_RECYCLE:-1800}
+      # Security audit and proxy trust
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      AUDIT_RETENTION_DAYS: ${AUDIT_RETENTION_DAYS:-365}
+      # Server limits: request body cap and password hashing cost.
+      BODY_LIMIT_BYTES: ${BODY_LIMIT_BYTES:-1048576}
+      BCRYPT_ROUNDS: ${BCRYPT_ROUNDS:-10}
+      # Failed-login alerts and the temporary sign-in pause. The pause text and
+      # countdown on the login pages are rendered from LOGIN_COOLDOWN_MINUTES /
+      # LOGIN_COOLDOWN_THRESHOLD, so these two values must reach the container.
+      FAILED_LOGIN_ALERT_ENABLED: ${FAILED_LOGIN_ALERT_ENABLED:-true}
+      FAILED_LOGIN_ALERT_THRESHOLD: ${FAILED_LOGIN_ALERT_THRESHOLD:-3}
+      FAILED_LOGIN_ALERT_WINDOW_MINUTES: ${FAILED_LOGIN_ALERT_WINDOW_MINUTES:-15}
+      FAILED_LOGIN_ALERT_COOLDOWN_MINUTES: ${FAILED_LOGIN_ALERT_COOLDOWN_MINUTES:-15}
+      LOGIN_COOLDOWN_THRESHOLD: ${LOGIN_COOLDOWN_THRESHOLD:-5}
+      LOGIN_COOLDOWN_MINUTES: ${LOGIN_COOLDOWN_MINUTES:-5}
+      LOGIN_LOCKOUT_THRESHOLD: ${LOGIN_LOCKOUT_THRESHOLD:-10}
+      LOGIN_LOCKOUT_WINDOW_MINUTES: ${LOGIN_LOCKOUT_WINDOW_MINUTES:-15}
+      # Container startup (docker-entrypoint.sh): wait for MySQL, then migrate
+      # and seed. Set either to "false" to skip that step. The wait budget is
+      # DB_WAIT_ATTEMPTS x DB_WAIT_INTERVAL seconds (60 x 2 = 2 minutes).
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-true}
+      RUN_SEED: ${RUN_SEED:-true}
+      DB_WAIT_ATTEMPTS: ${DB_WAIT_ATTEMPTS:-60}
+      DB_WAIT_INTERVAL: ${DB_WAIT_INTERVAL:-2}
       # Security & JWT Tokens
       JWT_SECRET: ${JWT_SECRET:-change-me-to-at-least-32-random-characters}
       CUSTOMER_JWT_SECRET: ${CUSTOMER_JWT_SECRET:-change-me-to-at-least-32-customer-characters}
       ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
       REFRESH_TOKEN_EXPIRE_MINUTES: ${REFRESH_TOKEN_EXPIRE_MINUTES:-480}
+      # Cookie attributes. Leave REFRESH_COOKIE_SECURE empty to auto-enable it
+      # when NODE_ENV=production. The path must cover the whole API prefix, or
+      # the browser stops sending the refresh cookie.
+      REFRESH_COOKIE_NAME: ${REFRESH_COOKIE_NAME:-dairy_refresh_token}
+      REFRESH_COOKIE_PATH: ${REFRESH_COOKIE_PATH:-/api/v1}
+      REFRESH_COOKIE_DOMAIN: ${REFRESH_COOKIE_DOMAIN:-}
+      REFRESH_COOKIE_SAMESITE: ${REFRESH_COOKIE_SAMESITE:-lax}
+      REFRESH_COOKIE_SECURE: ${REFRESH_COOKIE_SECURE:-}
+      SESSION_HINT_COOKIE_NAME: ${SESSION_HINT_COOKIE_NAME:-dairy_session}
+      CUSTOMER_REFRESH_COOKIE_NAME: ${CUSTOMER_REFRESH_COOKIE_NAME:-dairy_customer_refresh_token}
+      CUSTOMER_SESSION_HINT_COOKIE_NAME: ${CUSTOMER_SESSION_HINT_COOKIE_NAME:-dairy_customer_session}
       # Bootstrap Admin Account
       ADMIN_NAME: ${ADMIN_NAME:-System Admin}
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
@@ -86,6 +132,12 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_USE_TLS: ${SMTP_USE_TLS:-false}
+      # Enable at most one of TLS (587) and SSL (465).
+      SMTP_USE_SSL: ${SMTP_USE_SSL:-false}
+      SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
+      MAIL_FROM_EMAIL: ${MAIL_FROM_EMAIL:-no-reply@dairyfarm.com}
+      MAIL_FROM_NAME: ${MAIL_FROM_NAME:-AmritDhara Dairy}
+      PASSWORD_RESET_TTL_MINUTES: ${PASSWORD_RESET_TTL_MINUTES:-30}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     networks:
@@ -95,7 +147,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      # Migrations + seeding happen before Uvicorn binds the port.
+      start_period: 45s
 
   # ----------------------------------------------------------------------------
   # 3. Application Frontend Service (React 19 + Nginx)
@@ -106,8 +159,11 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api/v1}
-        VITE_SESSION_HINT_COOKIE: dairy_session
-        VITE_CUSTOMER_SESSION_HINT_COOKIE: dairy_customer_session
+        # Read from the same variables the backend uses, so the cookie the SPA
+        # looks for and the cookie the API sets cannot drift apart. They are
+        # build args: change one and rebuild the frontend image.
+        VITE_SESSION_HINT_COOKIE: ${SESSION_HINT_COOKIE_NAME:-dairy_session}
+        VITE_CUSTOMER_SESSION_HINT_COOKIE: ${CUSTOMER_SESSION_HINT_COOKIE_NAME:-dairy_customer_session}
     container_name: dairy_frontend
     restart: unless-stopped
     depends_on:
