@@ -177,10 +177,12 @@ class RequestLoggingMiddleware:
             if query:
                 path = f"{path}?{query}"
             duration_ms = (time.perf_counter() - started) * 1000
+            request_id = scope.get("state", {}).get("request_id", "-")
             logger.info(
-                "%s %s %s %.3f ms",
+                "%s %s %s %.3f ms rid=%s",
                 scope.get("method"),
                 path,
                 status_code,
                 duration_ms,
+                request_id,
             )

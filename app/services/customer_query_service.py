@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import status
 
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.models.customer_portal_account import CustomerPortalAccount
 from app.models.user import User
 from app.repositories.customer_portal_account_repository import (
@@ -26,6 +27,7 @@ from app.schemas.customer_queries import (
     serialize_staff_query,
     serialize_staff_query_detail,
 )
+from app.services.security_audit_service import SecurityAuditService
 from app.utils.time import business_now, business_now_naive
 
 OPERATOR_TRANSITIONS = {
@@ -50,11 +52,13 @@ class CustomerQueryService:
         customer_repository: CustomerRepository,
         account_repository: CustomerPortalAccountRepository,
         user_repository: UserRepository,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
         self.account_repository = account_repository
         self.user_repository = user_repository
+        self.audit = audit
 
     async def create(
         self,
@@ -63,6 +67,7 @@ class CustomerQueryService:
         category: str,
         subject: str,
         message: str,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         customer = await self.customer_repository.get_by_id(account.customer_id)
         if customer is None or not customer.is_active:
@@ -87,6 +92,19 @@ class CustomerQueryService:
             sender_type="customer",
             sender_account_id=account.id,
         )
+        if self.audit is not None:
+            await self.audit.record(
+                event_type="query.created",
+                context=context,
+                actor_account_id=account.id,
+                resource_type="customer_query",
+                resource_id=query.id,
+                metadata={
+                    "query_id": query.id,
+                    "query_no": query.query_no,
+                    "category": query.category,
+                },
+            )
         await self._commit(query)
         return {"query": await self._customer_detail(query)}
 
@@ -122,6 +140,8 @@ class CustomerQueryService:
         account: CustomerPortalAccount,
         query_id: int,
         body: str,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         query = await self._get_owned(account, query_id)
         if query.status == "closed":
@@ -141,6 +161,15 @@ class CustomerQueryService:
             query.status = "open"
             await self._record_status_change(query, "answered", "open")
         query.last_message_at = message.created_at or business_now_naive()
+        if self.audit is not None:
+            await self.audit.record(
+                event_type="query.customer_message",
+                context=context,
+                actor_account_id=account.id,
+                resource_type="customer_query",
+                resource_id=query.id,
+                metadata={"query_id": query.id, "message_id": message.id},
+            )
         await self._commit(query)
         return {"message": serialize_query_message(message)}
 
@@ -198,8 +227,15 @@ class CustomerQueryService:
         body: str,
         *,
         is_internal: bool,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         query = await self._get_any(query_id)
+        await self._require_assignment(
+            user,
+            query,
+            "internal_note" if is_internal else "message",
+            context,
+        )
         if query.status == "closed":
             raise api_error(
                 status.HTTP_409_CONFLICT,
@@ -214,6 +250,21 @@ class CustomerQueryService:
             is_internal=is_internal,
         )
         query.last_message_at = message.created_at or business_now_naive()
+        if self.audit is not None:
+            await self.audit.record(
+                event_type=(
+                    "query.internal_note" if is_internal else "query.staff_message"
+                ),
+                context=context,
+                actor_user_id=user.id,
+                resource_type="customer_query",
+                resource_id=query.id,
+                metadata={
+                    "query_id": query.id,
+                    "message_id": message.id,
+                    "is_internal": is_internal,
+                },
+            )
         await self._commit(query)
         return {"message": serialize_staff_message(message)}
 
@@ -222,8 +273,11 @@ class CustomerQueryService:
         user: User,
         query_id: int,
         target: str,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         query = await self._get_any(query_id)
+        await self._require_assignment(user, query, "status_change", context)
         current = query.status
         allowed = (
             ADMIN_TRANSITIONS if user.role == "admin" else OPERATOR_TRANSITIONS
@@ -238,6 +292,19 @@ class CustomerQueryService:
         if target != current:
             query.status = target
             await self._record_status_change(query, current, target)
+            if self.audit is not None:
+                await self.audit.record(
+                    event_type="query.status.changed",
+                    context=context,
+                    actor_user_id=user.id,
+                    resource_type="customer_query",
+                    resource_id=query.id,
+                    metadata={
+                        "query_id": query.id,
+                        "from_status": current,
+                        "to_status": target,
+                    },
+                )
             await self._commit(query)
         return {"query": await self._staff_detail(query)}
 
@@ -246,8 +313,11 @@ class CustomerQueryService:
         user: User,
         query_id: int,
         assigned_to: int | None,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         query = await self._get_any(query_id)
+        previous_assignee = query.assigned_to
         assignee = None
         if assigned_to is not None:
             assignee = await self.user_repository.get_by_id(assigned_to)
@@ -264,6 +334,28 @@ class CustomerQueryService:
                 )
 
         query.assigned_to = assigned_to
+        if self.audit is not None and previous_assignee != assigned_to:
+            await self.audit.record(
+                event_type=(
+                    "query.assigned" if assigned_to is not None else "query.unassigned"
+                ),
+                context=context,
+                actor_user_id=user.id,
+                resource_type="customer_query",
+                resource_id=query.id,
+                metadata=(
+                    {
+                        "query_id": query.id,
+                        "from_user_id": previous_assignee,
+                        "to_user_id": assigned_to,
+                    }
+                    if assigned_to is not None
+                    else {
+                        "query_id": query.id,
+                        "from_user_id": previous_assignee,
+                    }
+                ),
+            )
         message = await self.repository.add_message(
             query_id=query.id,
             body=(
@@ -277,6 +369,35 @@ class CustomerQueryService:
         query.last_message_at = message.created_at or business_now_naive()
         await self._commit(query)
         return {"query": await self._staff_detail(query)}
+
+    async def _require_assignment(
+        self,
+        user: User,
+        query: Any,
+        attempted_action: str,
+        context: RequestContext | None,
+    ) -> None:
+        if user.role == "admin" or query.assigned_to == user.id:
+            return
+
+        if self.audit is not None:
+            await self.audit.record_standalone(
+                event_type="query.access.denied",
+                context=context,
+                actor_user_id=user.id,
+                resource_type="customer_query",
+                resource_id=query.id,
+                metadata={
+                    "query_id": query.id,
+                    "assigned_to_user_id": query.assigned_to,
+                    "attempted_action": attempted_action,
+                },
+            )
+        raise api_error(
+            status.HTTP_403_FORBIDDEN,
+            "QUERY_NOT_ASSIGNED",
+            "This query is not assigned to you",
+        )
 
     async def _record_status_change(
         self,

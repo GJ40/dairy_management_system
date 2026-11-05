@@ -14,7 +14,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 
-from alembic import op
+from app.db.migration_helpers import add_column_if_missing, drop_column_if_exists
 
 revision: str = "0004_token_version"
 down_revision: Union[str, Sequence[str], None] = "0003_password_reset"
@@ -26,7 +26,7 @@ TABLES = ("users", "customer_portal_accounts")
 
 def upgrade() -> None:
     for table in TABLES:
-        op.add_column(
+        add_column_if_missing(
             table,
             sa.Column(
                 "token_version",
@@ -39,4 +39,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     for table in TABLES:
-        op.drop_column(table, "token_version")
+        drop_column_if_exists(table, "token_version")

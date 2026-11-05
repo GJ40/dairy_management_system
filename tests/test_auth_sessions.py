@@ -5,13 +5,18 @@ import unittest
 import httpx
 
 from app.core.config import Settings, settings
-from app.core.dependencies import get_user_repository
+from app.core.dependencies import get_login_security_service, get_user_repository
 from app.core.security import create_access_token, create_refresh_token
 from app.db.session import get_db
 from app.main import app
 from app.models.user import User
 from app.repositories.user_repository import UserRepository
-from tests.test_auth_and_users import FakeSession, FakeUserRepository, make_user
+from tests.test_auth_and_users import (
+    FakeLoginSecurityService,
+    FakeSession,
+    FakeUserRepository,
+    make_user,
+)
 
 COOKIE = settings.refresh_cookie_name
 HINT = settings.session_hint_cookie_name
@@ -38,6 +43,9 @@ class AuthRefreshTests(unittest.IsolatedAsyncioTestCase):
 
         app.dependency_overrides[get_db] = override_get_db
         app.dependency_overrides[get_user_repository] = override_repository
+        app.dependency_overrides[get_login_security_service] = lambda: (
+            FakeLoginSecurityService()
+        )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",

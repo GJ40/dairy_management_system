@@ -10,7 +10,11 @@ from pydantic import ValidationError
 
 import app.models  # noqa: F401
 from app.core.config import settings
-from app.core.dependencies import get_buffalo_repository, get_delete_repository
+from app.core.dependencies import (
+    get_buffalo_repository,
+    get_delete_repository,
+    get_security_audit_service,
+)
 from app.core.security import create_access_token
 from app.db.session import get_db
 from app.main import app
@@ -26,6 +30,7 @@ from app.schemas.buffalo import (
 )
 from app.services.buffalo_service import BuffaloService
 from app.services.delete_service import DeleteService
+from tests.audit_helpers import FakeAuditService
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
 
@@ -163,6 +168,9 @@ class FakeBuffaloRepository:
         self.buffaloes.append(buffalo)
         return buffalo
 
+    async def flush(self) -> None:
+        return None
+
     async def commit(self) -> None:
         self.commits += 1
 
@@ -188,6 +196,12 @@ class FakeDeleteRepository:
         ):
             self.record.is_deleted = True
             return self.record
+        return None
+
+    async def commit(self) -> None:
+        return None
+
+    async def rollback(self) -> None:
         return None
 
 
@@ -366,6 +380,33 @@ class BuffaloServiceTests(unittest.IsolatedAsyncioTestCase):
             {"total": 3, "active": 2, "dry": 1, "sold": 0, "dead": 0},
         )
 
+    async def test_buffalo_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = BuffaloService(  # type: ignore[arg-type]
+            self.repository,
+            audit=audit,
+        )
+        created = await service.create_buffalo(
+            CreateBuffaloRequest(tag_no="tag-300", name="Gauri", breed="Murrah"),
+            actor_user_id=1,
+        )
+        self.assertEqual(audit.records[-1]["event_type"], "buffalo.created")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["buffalo_id"], created["id"]
+        )
+
+        await service.update_buffalo(
+            str(created["id"]),
+            UpdateBuffaloRequest(name="Gauri Updated", status="sold"),
+            actor_user_id=1,
+        )
+        event_types = [record["event_type"] for record in audit.records]
+        self.assertIn("buffalo.status.changed", event_types)
+        self.assertIn("buffalo.updated", event_types)
+        self.assertEqual(
+            audit.records[-1]["metadata"]["changed_fields"], ["name"]
+        )
+
 
 class DeleteServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_soft_delete(self) -> None:
@@ -383,6 +424,19 @@ class DeleteServiceTests(unittest.IsolatedAsyncioTestCase):
             "buffaloes record #1 soft-deleted successfully",
         )
         self.assertTrue(result["deleted_at"].endswith("Z"))
+
+    async def test_soft_delete_audit_event(self) -> None:
+        buffalo = make_buffalo()
+        repository = FakeDeleteRepository(buffalo)
+        audit = FakeAuditService()
+        await DeleteService(repository, audit).soft_delete_resource(  # type: ignore[arg-type]
+            "buffaloes",
+            "1",
+            actor_user_id=1,
+        )
+        self.assertEqual(audit.records[-1]["event_type"], "record.soft_deleted")
+        self.assertEqual(audit.records[-1]["metadata"]["resource"], "buffaloes")
+        self.assertEqual(audit.records[-1]["metadata"]["record_id"], 1)
 
     async def test_unsupported_resource(self) -> None:
         repository = FakeDeleteRepository()
@@ -433,6 +487,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.delete_repository = FakeDeleteRepository(self.buffalo)
 
+        self.audit = FakeAuditService()
+
         async def override_get_db():
             yield FakeSession(self.admin, self.operator)
 
@@ -443,6 +499,7 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             return self.delete_repository  # type: ignore[return-value]
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         app.dependency_overrides[get_buffalo_repository] = override_buffalo_repository
         app.dependency_overrides[get_delete_repository] = override_delete_repository
         self.client = httpx.AsyncClient(

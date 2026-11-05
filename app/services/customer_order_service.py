@@ -10,6 +10,7 @@ from fastapi import status
 
 from app.core.config import settings
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.models.customer_portal_account import CustomerPortalAccount
 from app.models.user import User
 from app.repositories.customer_order_repository import CustomerOrderRepository
@@ -29,6 +30,7 @@ from app.schemas.customer_orders_staff import (
     serialize_staff_order_summary,
 )
 from app.services.invoice_service import InvoiceService
+from app.services.security_audit_service import SecurityAuditService
 from app.services.stock_lock import StockLockService
 from app.services.stock_service import StockService
 from app.utils.time import business_now, business_now_naive
@@ -46,6 +48,7 @@ class CustomerOrderService:
         sale_repository: SaleRepository | None = None,
         invoice_service: InvoiceService | None = None,
         stock_lock: StockLockService | None = None,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
@@ -53,6 +56,29 @@ class CustomerOrderService:
         self.sale_repository = sale_repository
         self.invoice_service = invoice_service
         self.stock_lock = stock_lock
+        self.audit = audit
+
+    async def _record(
+        self,
+        *,
+        event_type: str,
+        context: RequestContext | None,
+        order_id: int,
+        metadata: dict[str, object],
+        actor_user_id: int | None = None,
+        actor_account_id: int | None = None,
+    ) -> None:
+        if self.audit is None:
+            return
+        await self.audit.record(
+            event_type=event_type,
+            context=context,
+            actor_user_id=actor_user_id,
+            actor_account_id=actor_account_id,
+            resource_type="customer_order",
+            resource_id=order_id,
+            metadata=metadata,
+        )
 
     @asynccontextmanager
     async def _lock(self):
@@ -69,6 +95,7 @@ class CustomerOrderService:
         quantity_litres: Decimal,
         requested_date: date,
         note: str | None,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         customer = await self.customer_repository.get_by_id(account.customer_id)
         if customer is None or not customer.is_active:
@@ -136,6 +163,19 @@ class CustomerOrderService:
         )
 
         try:
+            await self._record(
+                event_type="order.created",
+                context=context,
+                actor_account_id=account.id,
+                order_id=order.id,
+                metadata={
+                    "order_id": order.id,
+                    "order_no": order.order_no,
+                    "customer_id": order.customer_id,
+                    "requested_date": order.requested_date,
+                    "quantity_litres": order.quantity_litres,
+                },
+            )
             await self.repository.commit()
         except Exception:
             await self.repository.rollback()
@@ -207,6 +247,8 @@ class CustomerOrderService:
         account: CustomerPortalAccount,
         order_id: int,
         reason: str | None,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         order = await self._get_owned(account, order_id)
         if order.status != "submitted":
@@ -228,6 +270,17 @@ class CustomerOrderService:
         )
 
         try:
+            await self._record(
+                event_type="order.cancelled",
+                context=context,
+                actor_account_id=account.id,
+                order_id=order.id,
+                metadata={
+                    "order_id": order.id,
+                    "from_status": "submitted",
+                    "to_status": "cancelled",
+                },
+            )
             await self.repository.commit()
         except Exception:
             await self.repository.rollback()
@@ -303,6 +356,8 @@ class CustomerOrderService:
         user: User,
         order_id: int,
         note: str | None,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         async with self._lock():
             order = await self._get_any(order_id)
@@ -326,7 +381,19 @@ class CustomerOrderService:
                 actor_user_id=user.id,
                 reason=note,
             )
-            await self._commit(order)
+            await self._commit(
+                order,
+                audit_event={
+                    "event_type": "order.approved",
+                    "context": context,
+                    "actor_user_id": user.id,
+                    "metadata": {
+                        "order_id": order.id,
+                        "from_status": "submitted",
+                        "to_status": "approved",
+                    },
+                },
+            )
 
         return {"order": await self._staff_detail(order)}
 
@@ -335,6 +402,8 @@ class CustomerOrderService:
         user: User,
         order_id: int,
         reason: str,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         order = await self._get_any(order_id)
         if order.status != "submitted":
@@ -356,10 +425,28 @@ class CustomerOrderService:
             actor_user_id=user.id,
             reason=reason,
         )
-        await self._commit(order)
+        await self._commit(
+            order,
+            audit_event={
+                "event_type": "order.rejected",
+                "context": context,
+                "actor_user_id": user.id,
+                "metadata": {
+                    "order_id": order.id,
+                    "from_status": "submitted",
+                    "to_status": "rejected",
+                },
+            },
+        )
         return {"order": await self._staff_detail(order)}
 
-    async def fulfil(self, user: User, order_id: int) -> dict[str, Any]:
+    async def fulfil(
+        self,
+        user: User,
+        order_id: int,
+        *,
+        context: RequestContext | None = None,
+    ) -> dict[str, Any]:
         async with self._lock():
             order = await self._get_any(order_id)
             if order.status != "approved":
@@ -409,7 +496,20 @@ class CustomerOrderService:
                 actor_type=user.role,
                 actor_user_id=user.id,
             )
-            await self._commit(order)
+            await self._commit(
+                order,
+                audit_event={
+                    "event_type": "order.fulfilled",
+                    "context": context,
+                    "actor_user_id": user.id,
+                    "metadata": {
+                        "order_id": order.id,
+                        "sale_id": sale.id,
+                        "invoice_id": invoice.id,
+                        "amount": order.estimated_total,
+                    },
+                },
+            )
 
         detail = await self._staff_detail(order)
         return {
@@ -423,6 +523,8 @@ class CustomerOrderService:
         user: User,
         order_id: int,
         reason: str,
+        *,
+        context: RequestContext | None = None,
     ) -> dict[str, Any]:
         async with self._lock():
             order = await self._get_any(order_id)
@@ -446,7 +548,19 @@ class CustomerOrderService:
                 actor_user_id=user.id,
                 reason=reason,
             )
-            await self._commit(order)
+            await self._commit(
+                order,
+                audit_event={
+                    "event_type": "order.cancelled",
+                    "context": context,
+                    "actor_user_id": user.id,
+                    "metadata": {
+                        "order_id": order.id,
+                        "from_status": previous,
+                        "to_status": "cancelled",
+                    },
+                },
+            )
 
         return {"order": await self._staff_detail(order)}
 
@@ -476,8 +590,15 @@ class CustomerOrderService:
             invoice=invoice,
         )
 
-    async def _commit(self, order: Any) -> None:
+    async def _commit(
+        self,
+        order: Any,
+        *,
+        audit_event: dict[str, Any] | None = None,
+    ) -> None:
         try:
+            if audit_event is not None:
+                await self._record(order_id=order.id, **audit_event)
             await self.repository.commit()
         except Exception:
             await self.repository.rollback()

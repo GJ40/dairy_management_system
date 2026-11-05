@@ -13,6 +13,7 @@ from app.core.dependencies import (
     get_buffalo_service,
     get_production_service,
     get_report_repository,
+    get_security_audit_service,
     get_stock_service,
 )
 from app.core.security import create_access_token
@@ -29,6 +30,7 @@ from app.services.production_service import ProductionService
 from app.services.report_service import ReportService, resolve_date_range
 from app.utils.report_pdf import build_report_pdf
 from app.utils.time import get_business_date
+from tests.audit_helpers import FakeAuditService
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
 TODAY = get_business_date()
@@ -207,12 +209,14 @@ def build_report_service(
     repository: FakeReportRepository | None = None,
     counts: dict[str, int] | None = None,
     production_rows: list[tuple[date, str, Decimal]] | None = None,
+    audit: FakeAuditService | None = None,
 ) -> ReportService:
     return ReportService(
         repository or FakeReportRepository(),  # type: ignore[arg-type]
         FakeBuffaloService(counts),  # type: ignore[arg-type]
         build_production_service(production_rows),  # type: ignore[arg-type]
         FakeStockService(),  # type: ignore[arg-type]
+        audit=audit,  # type: ignore[arg-type]
     )
 
 
@@ -552,6 +556,22 @@ class ReportPdfTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(len(content), 1200)
         self.assertEqual(filename, "dairy-dashboard-report-2026-10-29.pdf")
 
+    async def test_report_export_audit_event(self) -> None:
+        audit = FakeAuditService()
+        service = build_report_service(
+            build_profit_repository(),
+            audit=audit,
+        )
+        await service.generate_report_pdf(
+            ReportExportQuery(report_type="profit", month="2026-10"),
+            make_user(),
+        )
+        event = audit.standalone_records[-1]
+        self.assertEqual(event["event_type"], "report.exported")
+        self.assertEqual(event["metadata"]["report_type"], "profit")
+        self.assertEqual(event["metadata"]["period_start"], "2026-10-01")
+        self.assertEqual(event["metadata"]["period_end"], "2026-10-31")
+
     async def test_production_pdf_without_data_still_builds(self) -> None:
         service = build_report_service()
         content, _ = await service.generate_report_pdf(
@@ -595,10 +615,13 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         self.admin = make_user()
         self.operator = make_user(2, role="operator", username="ramesh_operator")
 
+        self.audit = FakeAuditService()
+
         async def override_get_db():
             yield FakeSession(self.admin, self.operator)
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         app.dependency_overrides[get_report_repository] = lambda: self.repository
         app.dependency_overrides[get_buffalo_service] = lambda: FakeBuffaloService()
         app.dependency_overrides[get_stock_service] = lambda: FakeStockService()

@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.dependencies import (
     get_customer_order_repository,
     get_customer_repository,
+    get_security_audit_service,
 )
 from app.core.security import create_customer_access_token
 from app.db.session import get_db
@@ -26,6 +27,7 @@ from app.schemas.customer_orders import (
 )
 from app.services.customer_order_service import CustomerOrderService
 from app.utils.time import business_now
+from tests.audit_helpers import FakeAuditService
 from tests.test_customer_portal_auth import (
     CUSTOMER_COOKIE,
     FakeCustomerRepository,
@@ -290,6 +292,30 @@ class OrderServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.repository.orders[0].rate_snapshot, Decimal("60.00"))
         self.assertEqual(self.repository.orders[1].rate_snapshot, Decimal("75.00"))
 
+    async def test_order_create_and_cancel_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = CustomerOrderService(  # type: ignore[arg-type]
+            self.repository,
+            self.customers,
+            audit=audit,
+        )
+        await service.create(
+            self.account,
+            quantity_litres=Decimal("12.50"),
+            requested_date=tomorrow(),
+            note=None,
+        )
+        order_id = self.repository.orders[0].id
+        self.assertEqual(audit.records[-1]["event_type"], "order.created")
+        self.assertEqual(audit.records[-1]["metadata"]["order_id"], order_id)
+        self.assertEqual(audit.records[-1]["actor_account_id"], self.account.id)
+
+        await service.cancel(self.account, order_id, "changed mind")
+        self.assertEqual(audit.records[-1]["event_type"], "order.cancelled")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["from_status"], "submitted"
+        )
+
     async def test_quantity_limits(self) -> None:
         for quantity, code in (
             ("0.00", "INVALID_QUANTITY"),
@@ -486,6 +512,8 @@ class OrderApiTests(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_customer_repository] = (
             override_customer_repository
         )
+        self.audit = FakeAuditService()
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",

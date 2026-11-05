@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from app.core.dependencies import get_sale_service, require_roles
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.user import User
 from app.schemas.sale import (
     DATE_PATTERN,
@@ -135,6 +136,7 @@ async def list_sales(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def record_sale(
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: User = Depends(require_roles("admin", "operator")),
     service: SaleService = Depends(get_sale_service),
@@ -143,7 +145,11 @@ async def record_sale(
         payload = CreateSaleRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return await service.record_sale(payload, user)
+    return await service.record_sale(
+        payload,
+        user,
+        context=get_request_context(request),
+    )
 
 
 @router.get("/{sale_id}")
@@ -157,6 +163,7 @@ async def get_sale(
 @router.put("/{sale_id}")
 async def update_sale(
     sale_id: str,
+    request: Request,
     body: dict[str, Any] = Body(...),
     user: User = Depends(require_roles("admin", "operator")),
     service: SaleService = Depends(get_sale_service),
@@ -165,4 +172,11 @@ async def update_sale(
         payload = UpdateSaleRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return {"sale": await service.update_sale(sale_id, payload, user)}
+    return {
+        "sale": await service.update_sale(
+            sale_id,
+            payload,
+            user,
+            context=get_request_context(request),
+        )
+    }

@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import status
 
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.models.user import User
 from app.repositories.report_repository import ReportRepository
 from app.schemas.report import (
@@ -18,6 +19,7 @@ from app.schemas.report import (
 )
 from app.services.buffalo_service import BuffaloService
 from app.services.production_service import ProductionService
+from app.services.security_audit_service import SecurityAuditService
 from app.services.stock_service import StockService
 from app.utils.report_pdf import build_report_pdf, report_filename
 from app.utils.time import business_now, get_business_date
@@ -66,11 +68,14 @@ class ReportService:
         buffalo_service: BuffaloService,
         production_service: ProductionService,
         stock_service: StockService,
+        *,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.buffalo_service = buffalo_service
         self.production_service = production_service
         self.stock_service = stock_service
+        self.audit = audit
 
     async def get_profit_report(
         self,
@@ -164,6 +169,8 @@ class ReportService:
         self,
         query: ReportExportQuery,
         user: User,
+        *,
+        context: RequestContext | None = None,
     ) -> tuple[bytes, str]:
         """Build a downloadable analytical PDF for the requested report type.
 
@@ -213,6 +220,20 @@ class ReportService:
             generated_at=business_now(),
             prepared_by=prepared_by,
         )
+        if self.audit is not None:
+            await self.audit.record_standalone(
+                event_type="report.exported",
+                context=context,
+                actor_user_id=user.id,
+                resource_type="report",
+                resource_id=report_type,
+                metadata={
+                    "report_type": report_type,
+                    "period_start": period_from,
+                    "period_end": period_to,
+                    "role": user.role,
+                },
+            )
         return content, report_filename(report_type, period_from, period_to)
 
     async def get_production_report(

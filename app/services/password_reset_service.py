@@ -8,6 +8,7 @@ from fastapi import BackgroundTasks, status
 
 from app.core.config import settings
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.core.security import hash_password
 from app.models.customer_portal_account import CustomerPortalAccount
 from app.models.password_reset_token import (
@@ -24,6 +25,7 @@ from app.repositories.password_reset_repository import PasswordResetRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.customer_portal_auth import MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH
 from app.services.email_service import EmailService
+from app.services.security_audit_service import SecurityAuditService
 from app.utils.tasks import deliver_or_queue
 from app.utils.time import business_now_naive
 
@@ -104,18 +106,21 @@ class PasswordResetService:
         account_repository: CustomerPortalAccountRepository,
         customer_repository: CustomerRepository,
         email_service: EmailService,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.user_repository = user_repository
         self.account_repository = account_repository
         self.customer_repository = customer_repository
         self.email_service = email_service
+        self.audit = audit
 
     async def request_staff_reset(
         self,
         email: str,
         *,
         background: BackgroundTasks | None = None,
+        context: RequestContext | None = None,
     ) -> dict[str, str]:
         user = await self.user_repository.get_by_email(email)
         if user is not None and user.is_active:
@@ -125,7 +130,10 @@ class PasswordResetService:
                 email=user.email,
                 name=user.full_name,
                 background=background,
+                context=context,
             )
+        else:
+            await self._record_request(context, RESET_SCOPE_STAFF, False)
         return {"message": GENERIC_MESSAGE}
 
     async def request_customer_reset(
@@ -133,6 +141,7 @@ class PasswordResetService:
         email: str,
         *,
         background: BackgroundTasks | None = None,
+        context: RequestContext | None = None,
     ) -> dict[str, str]:
         account = await self.account_repository.get_by_email(email)
         if (
@@ -149,7 +158,10 @@ class PasswordResetService:
                     email=account.email,
                     name=customer.name,
                     background=background,
+                    context=context,
                 )
+                return {"message": GENERIC_MESSAGE}
+        await self._record_request(context, RESET_SCOPE_CUSTOMER, False)
         return {"message": GENERIC_MESSAGE}
 
     async def validate(self, scope: str, token: str) -> dict[str, bool]:
@@ -163,6 +175,7 @@ class PasswordResetService:
         password: str,
         *,
         background: BackgroundTasks | None = None,
+        context: RequestContext | None = None,
     ) -> dict[str, str]:
         record = await self._require_valid(scope, token)
         _validate_new_password(password)
@@ -190,6 +203,26 @@ class PasswordResetService:
             subject_id=record.subject_id,
             now=now,
         )
+        if self.audit is not None:
+            await self.audit.record(
+                event_type="auth.password.reset.completed",
+                context=context,
+                actor_user_id=(
+                    subject.id if isinstance(subject, User) else None
+                ),
+                actor_account_id=(
+                    subject.id
+                    if isinstance(subject, CustomerPortalAccount)
+                    else None
+                ),
+                resource_type=(
+                    "staff_user"
+                    if isinstance(subject, User)
+                    else "customer_portal_account"
+                ),
+                resource_id=subject.id,
+                metadata={"scope": "staff" if scope == RESET_SCOPE_STAFF else "customer"},
+            )
 
         try:
             await self.repository.commit()
@@ -214,6 +247,7 @@ class PasswordResetService:
         email: str,
         name: str,
         background: BackgroundTasks | None = None,
+        context: RequestContext | None = None,
     ) -> None:
         token, token_hash, expires_at = issue_reset_token()
         await self.repository.invalidate_outstanding(
@@ -227,6 +261,22 @@ class PasswordResetService:
             token_hash=token_hash,
             expires_at=expires_at,
         )
+        if self.audit is not None:
+            await self.audit.record(
+                event_type="auth.password.reset.requested",
+                context=context,
+                actor_type="anonymous",
+                resource_type=(
+                    "staff_user"
+                    if scope == RESET_SCOPE_STAFF
+                    else "customer_portal_account"
+                ),
+                resource_id=subject_id,
+                metadata={
+                    "scope": "staff" if scope == RESET_SCOPE_STAFF else "customer",
+                    "account_resolved": True,
+                },
+            )
         try:
             await self.repository.commit()
         except Exception:
@@ -241,6 +291,24 @@ class PasswordResetService:
             name=name,
             reset_url=reset_url,
             audience=_AUDIENCE[scope],
+        )
+
+    async def _record_request(
+        self,
+        context: RequestContext | None,
+        scope: str,
+        account_resolved: bool,
+    ) -> None:
+        if self.audit is None:
+            return
+        await self.audit.record_standalone(
+            event_type="auth.password.reset.requested",
+            context=context,
+            actor_type="anonymous",
+            metadata={
+                "scope": "staff" if scope == RESET_SCOPE_STAFF else "customer",
+                "account_resolved": account_resolved,
+            },
         )
 
     async def _require_valid(

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 import app.models  # noqa: F401
 from app.core.config import settings
 from app.core.dependencies import (
+    get_security_audit_service,
     get_stock_repository,
     get_wastage_repository,
 )
@@ -24,6 +25,7 @@ from app.schemas.wastage import RecordWastageRequest
 from app.services.stock_service import StockService
 from app.services.wastage_service import WastageService
 from app.utils.time import get_business_date
+from tests.audit_helpers import FakeAuditService
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
 
@@ -332,6 +334,26 @@ class WastageServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listing["total"], 1)
         self.assertEqual(listing["items"][0]["recorder"]["username"], "ramesh_operator")
 
+    async def test_wastage_audit_event(self) -> None:
+        today = get_business_date()
+        self.stock_repository.production.append(
+            (date.fromisoformat(today), Decimal("15.00"))
+        )
+        audit = FakeAuditService()
+        service = WastageService(  # type: ignore[arg-type]
+            self.wastage_repository,
+            self.stock_service,
+            audit=audit,
+        )
+        payload = RecordWastageRequest.model_validate(
+            {"waste_date": today, "litres": 2.5, "reason": "spoiled"}
+        )
+        await service.record_wastage(payload, self.operator)
+        event = audit.records[-1]
+        self.assertEqual(event["event_type"], "wastage.recorded")
+        self.assertEqual(event["metadata"]["waste_date"], today)
+        self.assertEqual(event["metadata"]["reason"], "spoiled")
+
     async def test_permissions_and_quantity(self) -> None:
         payload = RecordWastageRequest.model_validate(
             {"waste_date": "2099-01-01", "litres": 1, "reason": "spilled"}
@@ -398,6 +420,8 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_db] = override_get_db
         app.dependency_overrides[get_stock_repository] = override_stock_repository
         app.dependency_overrides[get_wastage_repository] = override_wastage_repository
+        self.audit = FakeAuditService()
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",

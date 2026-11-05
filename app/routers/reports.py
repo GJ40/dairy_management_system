@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, Request, Response, status
 
 from app.core.dependencies import get_report_service, require_roles
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.user import User
 from app.schemas.report import (
     DATE_PATTERN,
@@ -142,6 +143,7 @@ async def dashboard_overview(
 
 @router.get("/pdf")
 async def report_pdf(
+    request: Request,
     query: ReportExportQuery = Depends(parse_export_query),
     user: User = Depends(ANY_ROLE),
     service: ReportService = Depends(get_report_service),
@@ -153,7 +155,11 @@ async def report_pdf(
             "Access denied: Requires one of [admin] role",
         )
 
-    content, filename = await service.generate_report_pdf(query, user)
+    content, filename = await service.generate_report_pdf(
+        query,
+        user,
+        context=get_request_context(request),
+    )
     return Response(
         content=content,
         media_type="application/pdf",

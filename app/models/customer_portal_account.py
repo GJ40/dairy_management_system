@@ -19,6 +19,7 @@ class CustomerPortalAccount(TimestampMixin, SoftDeleteMixin, Base):
         ),
         Index("customer_portal_accounts_email", "email", unique=True),
         Index("customer_portal_accounts_is_active", "is_active"),
+        Index("customer_portal_accounts_lock_reason", "lock_reason"),
         {
             "mysql_engine": "InnoDB",
             "mysql_charset": "utf8mb4",
@@ -57,3 +58,17 @@ class CustomerPortalAccount(TimestampMixin, SoftDeleteMixin, Base):
         default=0,
         server_default=text("0"),
     )
+    # Failed-login lockout state. `failed_login_count` counts the current burst
+    # inside `failed_login_first_at`'s window and resets on success or unlock.
+    failed_login_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    failed_login_first_at: Mapped[datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    lock_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)

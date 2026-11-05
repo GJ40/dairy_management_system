@@ -68,6 +68,11 @@ COPY alembic.ini ./
 COPY alembic/ ./alembic/
 COPY app/ ./app/
 COPY pyproject.toml ./
+COPY docker-entrypoint.sh ./
+
+# Tolerate a CRLF checkout of the entrypoint (see .gitattributes): a stray \r
+# would make the shell fail with "\r: not found" on the first line.
+RUN sed -i 's/\r$//' docker-entrypoint.sh
 
 # Ensure correct file ownership for the non-root application user
 RUN chown -R appuser:appgroup /app
@@ -77,6 +82,7 @@ USER appuser
 # Expose FastAPI application port
 EXPOSE 8000
 
-# Automatically run database migrations, ensure base seed data, and start Uvicorn
-CMD ["sh", "-c", "alembic upgrade head && python -m app.seeders.base_seed && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Startup is owned by docker-entrypoint.sh: wait for MySQL, run the idempotent
+# migrations, ensure the base seed data, then exec the command below.
+CMD ["sh", "./docker-entrypoint.sh", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 

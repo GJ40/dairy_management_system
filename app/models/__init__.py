@@ -14,6 +14,7 @@ from app.models.milk_production import MilkProduction
 from app.models.milk_wastage import MilkWastage
 from app.models.password_reset_token import PasswordResetToken
 from app.models.sale import Sale
+from app.models.security_audit_event import SecurityAuditEvent
 from app.models.user import User
 
 __all__ = [
@@ -33,5 +34,6 @@ __all__ = [
     "MilkWastage",
     "PasswordResetToken",
     "Sale",
+    "SecurityAuditEvent",
     "User",
 ]

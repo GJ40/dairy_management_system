@@ -92,6 +92,9 @@ class CustomerRepository:
         outstanding = max(Decimal("0"), sales_value - paid_value)
         return sales_value, paid_value, outstanding
 
+    async def flush(self) -> None:
+        await self.session.flush()
+
     async def commit(self) -> None:
         await self.session.commit()
 

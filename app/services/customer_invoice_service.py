@@ -5,6 +5,7 @@ from typing import Any
 from fastapi import status
 
 from app.core.errors import api_error
+from app.core.request_context import RequestContext
 from app.models.customer_portal_account import CustomerPortalAccount
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.invoice_repository import InvoiceRepository
@@ -15,6 +16,7 @@ from app.schemas.customer_invoices import (
     serialize_portal_invoice,
     serialize_portal_invoice_detail,
 )
+from app.services.security_audit_service import SecurityAuditService
 from app.utils.pdf import build_invoice_pdf
 
 
@@ -23,9 +25,12 @@ class CustomerInvoiceService:
         self,
         repository: InvoiceRepository,
         customer_repository: CustomerRepository,
+        *,
+        audit: SecurityAuditService | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
+        self.audit = audit
 
     async def list_invoices(
         self,
@@ -77,6 +82,8 @@ class CustomerInvoiceService:
         self,
         account: CustomerPortalAccount,
         invoice_id: int,
+        *,
+        context: RequestContext | None = None,
     ) -> tuple[bytes, str]:
         invoice = await self._get_owned(account, invoice_id)
         sales = [
@@ -90,6 +97,16 @@ class CustomerInvoiceService:
             customer=invoice.customer,
             sales=sales,
         )
+        if self.audit is not None:
+            await self.audit.record_standalone(
+                event_type="invoice.pdf.downloaded",
+                context=context,
+                actor_account_id=account.id,
+                actor_type="customer",
+                resource_type="invoice",
+                resource_id=invoice.id,
+                metadata={"invoice_id": invoice.id, "scope": "customer"},
+            )
         return content, f"invoice-{invoice.invoice_no}.pdf"
 
     async def get_balance(

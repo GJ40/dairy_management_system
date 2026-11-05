@@ -1,9 +1,60 @@
-Alembic baseline for the existing MySQL schema.
+Alembic migrations for the Dairy Management System (MySQL 8).
 
-`0001_baseline` is an empty revision. It gives Alembic a starting point for a database whose tables
-were created by the Node/Sequelize backend. The live database has been stamped with this revision;
-`alembic_version` contains `0001_baseline`.
+# Revision chain
 
-Future schema changes must be new revisions. Never run `alembic revision --autogenerate` to create
-an initial "create all tables" migration, and never downgrade/reset production. See
-SCHEMA_MAPPING.md for the inspection and stamp record.
+    0001_baseline        ten core tables (users, buffaloes, customers, ...)
+    0002_customer_portal portal accounts, orders, queries, sales.source_order_id
+    0003_password_reset  password_reset_tokens
+    0004_token_version   users.token_version, customer_portal_accounts.token_version
+    0005_security_audit  security_audit_events
+    0006_login_lockout   failed-login counters and lock state on both account tables
+
+`0001_baseline` started life as an empty revision that was stamped onto the
+legacy Sequelize database. It now carries the real DDL so a fresh volume can be
+built from nothing, and every revision is idempotent.
+
+# Why the migrations are idempotent
+
+The same chain has to work against three different databases:
+
+* a brand-new MySQL volume created by `docker compose up`;
+* the legacy Sequelize database (tables exist, `alembic_version` may be absent);
+* a database left behind by an interrupted `alembic upgrade`.
+
+MySQL has no `CREATE TABLE IF NOT EXISTS` equivalent for indexes/columns in
+Alembic's DDL, so every revision probes the live schema first through
+`app/db/migration_helpers.py` (`create_table_if_missing`,
+`add_column_if_missing`, `create_index_if_missing`,
+`create_foreign_key_if_missing`, and the `drop_*_if_exists` counterparts for
+downgrades). Re-running `alembic upgrade head` is therefore a no-op instead of
+"table already exists" / "duplicate column name" / "duplicate key name".
+
+Never import another revision file from a migration to "self-heal" the schema
+(an earlier version of `0002` re-ran `0001` from disk and duplicated the
+baseline DDL). Add a guarded operation instead.
+
+# Commands
+
+Run them from `backend_py/`:
+
+    uv run alembic current           # where the database is
+    uv run alembic upgrade head      # apply everything pending
+    uv run alembic downgrade -1      # roll back one revision
+    uv run alembic history           # the chain
+
+Inside the backend container the virtualenv is already on `PATH`, and the image
+does not ship `uv.lock`, so use the plain executable:
+
+    docker compose exec backend alembic current
+    docker compose exec backend alembic upgrade head
+
+The container applies migrations by itself on start (`docker-entrypoint.sh`),
+so these are only needed for inspection or manual recovery.
+
+# Adding a revision
+
+    uv run alembic revision -m "describe the change"
+
+Write the DDL by hand (do not autogenerate against a live database), and guard
+every operation with the helpers above so the revision stays re-runnable.
+Never downgrade or reset a production database; take a backup first.

@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from app.core.dependencies import get_invoice_service, require_roles
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
+from app.models.user import User
 from app.schemas.invoice import (
     DATE_PATTERN,
     CreateInvoiceRequest,
@@ -134,22 +136,36 @@ async def list_invoices(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_invoice(
+    request: Request,
     body: dict[str, Any] = Body(...),
+    user: User = Depends(require_roles("admin", "operator")),
     service: InvoiceService = Depends(get_invoice_service),
 ) -> dict[str, Any]:
     try:
         payload = CreateInvoiceRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return {"invoice": await service.create_invoice(payload)}
+    return {
+        "invoice": await service.create_invoice(
+            payload,
+            actor_user_id=user.id,
+            context=get_request_context(request),
+        )
+    }
 
 
 @router.get("/{invoice_id}/pdf")
 async def invoice_pdf(
     invoice_id: str,
+    request: Request,
+    user: User = Depends(require_roles("admin", "operator")),
     service: InvoiceService = Depends(get_invoice_service),
 ) -> Response:
-    content, filename = await service.generate_invoice_pdf(invoice_id)
+    content, filename = await service.generate_invoice_pdf(
+        invoice_id,
+        actor_user_id=user.id,
+        context=get_request_context(request),
+    )
     return Response(
         content=content,
         media_type="application/pdf",
@@ -170,11 +186,20 @@ async def get_invoice(
 @router.patch("/{invoice_id}/payment")
 async def record_payment(
     invoice_id: str,
+    request: Request,
     body: dict[str, Any] = Body(...),
+    user: User = Depends(require_roles("admin", "operator")),
     service: InvoiceService = Depends(get_invoice_service),
 ) -> dict[str, Any]:
     try:
         payload = RecordPaymentRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return {"invoice": await service.record_payment(invoice_id, payload)}
+    return {
+        "invoice": await service.record_payment(
+            invoice_id,
+            payload,
+            actor_user_id=user.id,
+            context=get_request_context(request),
+        )
+    }

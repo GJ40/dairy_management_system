@@ -9,6 +9,8 @@ from pydantic import ValidationError
 
 from app.core.dependencies import get_customer_service, require_roles
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
+from app.models.user import User
 from app.schemas.customer import (
     CreateCustomerRequest,
     CustomerQuery,
@@ -107,14 +109,22 @@ async def list_customers(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_customer(
+    request: Request,
     body: dict[str, Any] = Body(...),
+    user: User = Depends(require_roles("admin", "operator")),
     service: CustomerService = Depends(get_customer_service),
 ) -> dict[str, Any]:
     try:
         payload = CreateCustomerRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return {"customer": await service.create_customer(payload)}
+    return {
+        "customer": await service.create_customer(
+            payload,
+            actor_user_id=user.id,
+            context=get_request_context(request),
+        )
+    }
 
 
 @router.get("/{customer_id}/balance")
@@ -136,11 +146,20 @@ async def get_customer(
 @router.put("/{customer_id}")
 async def update_customer(
     customer_id: str,
+    request: Request,
     body: dict[str, Any] = Body(...),
+    user: User = Depends(require_roles("admin", "operator")),
     service: CustomerService = Depends(get_customer_service),
 ) -> dict[str, Any]:
     try:
         payload = UpdateCustomerRequest.model_validate(body)
     except ValidationError as exc:
         raise RequestValidationError(exc.errors(include_url=False)) from exc
-    return {"customer": await service.update_customer(customer_id, payload)}
+    return {
+        "customer": await service.update_customer(
+            customer_id,
+            payload,
+            actor_user_id=user.id,
+            context=get_request_context(request),
+        )
+    }

@@ -13,6 +13,9 @@ from app.core.config import settings
 from app.core.dependencies import (
     get_customer_portal_account_repository,
     get_customer_repository,
+    get_email_service,
+    get_login_security_service,
+    get_security_audit_service,
     get_user_repository,
 )
 from app.core.security import (
@@ -47,7 +50,12 @@ from app.services.customer_portal_auth_service import (
     issue_activation_token,
 )
 from app.utils.time import business_now_naive
-from tests.test_auth_and_users import FakeUserRepository, make_user
+from tests.test_auth_and_users import (
+    FakeAuditService,
+    FakeLoginSecurityService,
+    FakeUserRepository,
+    make_user,
+)
 
 CREATED = datetime(2026, 10, 30, 12, 0, 0)
 PASSWORD = "customer-pass-123"
@@ -73,6 +81,23 @@ def make_customer(
         created_at=CREATED,
         updated_at=CREATED,
     )
+
+
+class FakeEmailService:
+    """Capture activation mail so a test run never reaches a real SMTP server.
+
+    The API tests drive the real provisioning route, which used to inherit the
+    live EmailService from app.core.dependencies: every provision, reactivate
+    and reset-activation dropped a genuine message into whatever SMTP_HOST
+    points at (Mailpit locally).
+    """
+
+    def __init__(self) -> None:
+        self.activation_calls: list[dict[str, object]] = []
+
+    async def send_portal_activation(self, **kwargs: object) -> bool:
+        self.activation_calls.append(kwargs)
+        return True
 
 
 class FakeCustomerRepository:
@@ -277,7 +302,12 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         self.customer = make_customer()
         self.customers = FakeCustomerRepository([self.customer])
         self.accounts = FakePortalAccountRepository()
-        self.service = CustomerPortalAuthService(self.accounts, self.customers)
+        self.login_security = FakeLoginSecurityService()
+        self.service = CustomerPortalAuthService(
+            self.accounts,
+            self.customers,
+            self.login_security,
+        )
         self.admin_service = CustomerPortalAccountService(
             self.accounts, self.customers
         )
@@ -291,6 +321,27 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
             actor_user_id=1,
         )
         return self.accounts.accounts[0], result["activation"]["token"]
+
+    async def test_provision_writes_central_audit_event(self) -> None:
+        audit = FakeAuditService()
+        service = CustomerPortalAccountService(
+            self.accounts,
+            self.customers,
+            None,
+            audit,  # type: ignore[arg-type]
+        )
+        await service.provision(
+            CreatePortalAccountRequest(
+                customer_id=self.customer.id,
+                email="audit@example.com",
+            ),
+            actor_user_id=1,
+        )
+        self.assertEqual(
+            audit.events[-1]["event_type"],
+            "portal_account.provisioned",
+        )
+        self.assertEqual(audit.events[-1]["metadata"]["customer_id"], 4)
 
     async def test_provision_creates_account_and_audit_event(self) -> None:
         account, token = await self._provision_and_get_token()
@@ -408,6 +459,60 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException):
             await self.service.login("customer@example.com", PASSWORD)
 
+    async def test_login_failures_and_success_are_audited(self) -> None:
+        account, token = await self._provision_and_get_token()
+
+        with self.assertRaises(HTTPException):
+            await self.service.login("customer@example.com", PASSWORD)
+        self.assertEqual(
+            self.login_security.failures[-1]["reason_code"], "not_activated"
+        )
+        self.assertEqual(
+            self.login_security.failures[-1]["actor_account_id"], account.id
+        )
+        self.assertTrue(self.login_security.failures[-1]["alertable"])
+
+        await self.service.activate(token, PASSWORD)
+
+        with self.assertRaises(HTTPException):
+            await self.service.login("customer@example.com", "wrong-password")
+        self.assertEqual(
+            self.login_security.failures[-1]["reason_code"], "bad_password"
+        )
+
+        session = await self.service.login("customer@example.com", PASSWORD)
+        self.assertTrue(session["access_token"])
+        self.assertEqual(len(self.login_security.successes), 1)
+        success = self.login_security.successes[0]
+        self.assertEqual(success["scope"], "customer")
+        self.assertEqual(success["actor_account_id"], account.id)
+
+        account.is_active = False
+        with self.assertRaises(HTTPException):
+            await self.service.login("customer@example.com", PASSWORD)
+        self.assertEqual(self.login_security.failures[-1]["reason_code"], "inactive")
+
+        account.is_active = True
+        self.customer.is_active = False
+        with self.assertRaises(HTTPException):
+            await self.service.login("customer@example.com", PASSWORD)
+        self.assertEqual(self.login_security.failures[-1]["reason_code"], "inactive")
+
+        self.customer.is_active = True
+        account.is_deleted = True
+        with self.assertRaises(HTTPException):
+            await self.service.login("customer@example.com", PASSWORD)
+        self.assertEqual(self.login_security.failures[-1]["reason_code"], "deleted")
+        self.assertFalse(self.login_security.failures[-1]["alertable"])
+
+        with self.assertRaises(HTTPException):
+            await self.service.login("missing@example.com", PASSWORD)
+        self.assertEqual(
+            self.login_security.failures[-1]["reason_code"], "unknown_email"
+        )
+        self.assertIsNone(self.login_security.failures[-1]["actor_account_id"])
+        self.assertFalse(self.login_security.failures[-1]["alertable"])
+
     async def test_refresh_issues_new_access_token(self) -> None:
         account, token = await self._provision_and_get_token()
         await self.service.activate(token, PASSWORD)
@@ -422,6 +527,13 @@ class ServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as error:
             await self.service.refresh(session["access_token"])
         self.assertEqual(error.exception.detail["code"], "UNAUTHORIZED")
+        self.assertEqual(
+            self.login_security.refresh_failures[-1]["reason_code"],
+            "invalid",
+        )
+        self.assertEqual(
+            self.login_security.refresh_failures[-1]["scope"], "customer"
+        )
 
     async def test_refresh_rejects_a_token_issued_before_a_password_reset(
         self,
@@ -536,6 +648,14 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             override_customer_repository
         )
         app.dependency_overrides[get_user_repository] = override_user_repository
+        self.login_security = FakeLoginSecurityService()
+        self.audit = FakeAuditService()
+        self.email = FakeEmailService()
+        app.dependency_overrides[get_login_security_service] = lambda: (
+            self.login_security
+        )
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
+        app.dependency_overrides[get_email_service] = lambda: self.email
 
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
@@ -566,6 +686,11 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             headers=self._staff_auth(),
         )
         self.assertEqual(response.status_code, 201, response.text)
+        # Proves the override above is the mailer the route actually used.
+        self.assertTrue(self.email.activation_calls)
+        self.assertEqual(
+            self.email.activation_calls[-1]["to"], "customer@example.com"
+        )
         return response.json()
 
     async def _activate(self) -> None:
@@ -630,6 +755,18 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
                 "",
             )
             self.assertIn("max-age=0", raw.lower())
+
+    async def test_login_failure_keeps_background_audit_task(self) -> None:
+        await self._activate()
+
+        response = await self.client.post(
+            "/api/v1/customer-auth/login",
+            json={"email": "customer@example.com", "password": "wrong-password"},
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"]["message"], "Invalid email or password")
+        self.assertEqual(self.login_security.background_runs, 1)
 
     async def test_me_requires_customer_cookie_and_rejects_staff_token(self) -> None:
         await self._activate()

@@ -14,12 +14,14 @@ from app.core.dependencies import (
     get_customer_query_repository,
     get_customer_repository,
     get_invoice_repository,
+    get_security_audit_service,
     get_user_repository,
 )
 from app.core.security import create_access_token, create_customer_access_token
 from app.db.session import get_db
 from app.main import app
 from app.utils.time import business_now
+from tests.audit_helpers import FakeAuditService
 from tests.test_auth_and_users import FakeUserRepository
 from tests.test_customer_portal_auth import (
     CUSTOMER_COOKIE,
@@ -73,6 +75,8 @@ class SecurityProbeTests(unittest.IsolatedAsyncioTestCase):
             lambda: self.accounts
         )
         app.dependency_overrides[get_user_repository] = lambda: self.users
+        self.audit = FakeAuditService()
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",

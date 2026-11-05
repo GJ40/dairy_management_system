@@ -13,10 +13,28 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
-def api_error(status_code: int, code: str, message: str) -> HTTPException:
+def api_error(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    headers: dict[str, str] | None = None,
+    extra: dict[str, Any] | None = None,
+) -> HTTPException:
+    """Build an HTTPException carrying the uniform error envelope.
+
+    ``extra`` adds machine-readable fields (for example the remaining cooldown
+    seconds) alongside ``code`` and ``message``, so a client can render the
+    state without parsing prose.
+    """
+    detail: dict[str, Any] = {"code": code, "message": message}
+    for key, value in (extra or {}).items():
+        if key not in ("code", "message"):
+            detail[key] = value
     return HTTPException(
         status_code=status_code,
-        detail={"code": code, "message": message},
+        detail=detail,
+        headers=headers,
     )
 
 
@@ -242,13 +260,21 @@ def register_exception_handlers(app: FastAPI) -> None:
         if isinstance(detail, dict):
             code = str(detail.get("code") or _status_code_to_error_code(exc.status_code))
             message = str(detail.get("message") or detail.get("detail") or detail)
+            # Keep machine-readable extras (retry_after_seconds, ...) while
+            # normalising code/message to strings.
+            body: dict[str, Any] = {
+                key: value for key, value in detail.items() if key != "detail"
+            }
+            body["code"] = code
+            body["message"] = message
         else:
             code = _status_code_to_error_code(exc.status_code)
             message = str(detail)
+            body = {"code": code, "message": message}
 
         return JSONResponse(
             status_code=exc.status_code,
-            content=_payload(code, message),
+            content={"error": body},
             headers=exc.headers,
         )
 

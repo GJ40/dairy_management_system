@@ -194,6 +194,7 @@ class UserQuery:
     page_size: int = 20
     role: str | None = None
     is_active: bool | None = None
+    is_locked: bool | None = None
     search: str | None = None
 
 
@@ -206,6 +207,9 @@ def serialize_user(user: Any, *, snake_timestamps: bool = False) -> dict[str, An
         "role": user.role,
         "is_active": bool(user.is_active),
         "is_deleted": bool(user.is_deleted),
+        "is_locked": user.locked_at is not None,
+        "locked_at": iso_timestamp(user.locked_at),
+        "lock_reason": user.lock_reason,
     }
     if snake_timestamps:
         data["created_at"] = iso_timestamp(user.created_at)

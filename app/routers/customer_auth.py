@@ -21,6 +21,7 @@ from app.core.dependencies import (
     get_password_reset_service,
 )
 from app.core.errors import api_error
+from app.core.request_context import get_request_context
 from app.models.customer_portal_account import CustomerPortalAccount
 from app.models.password_reset_token import RESET_SCOPE_CUSTOMER
 from app.schemas.customer_portal_auth import (
@@ -64,13 +65,37 @@ def _clear_customer_cookies(response: Response) -> None:
     _delete_cookie(response, settings.customer_session_hint_cookie_flags)
 
 
-def _error_with_cookies(exc: HTTPException) -> JSONResponse:
+def _error_body(exc: HTTPException) -> dict[str, Any]:
+    """Uniform error envelope, keeping structured fields such as retry times."""
     detail = exc.detail if isinstance(exc.detail, dict) else {}
-    code = str(detail.get("code") or "UNAUTHORIZED")
-    message = str(detail.get("message") or exc.detail)
+    body: dict[str, Any] = {
+        key: value for key, value in detail.items() if key != "detail"
+    }
+    body["code"] = str(detail.get("code") or "UNAUTHORIZED")
+    body["message"] = str(detail.get("message") or exc.detail)
+    return body
+
+
+def _error_response(
+    exc: HTTPException,
+    *,
+    background: BackgroundTasks | None = None,
+) -> JSONResponse:
     response = JSONResponse(
         status_code=exc.status_code,
-        content={"error": {"code": code, "message": message}},
+        content={"error": _error_body(exc)},
+        headers=exc.headers,
+    )
+    if background is not None:
+        # Keep the login audit/alert task alive when authentication raises.
+        response.background = background
+    return response
+
+
+def _error_with_cookies(exc: HTTPException) -> JSONResponse:
+    response = JSONResponse(
+        status_code=exc.status_code,
+        content={"error": _error_body(exc)},
     )
     _clear_customer_cookies(response)
     return response
@@ -86,9 +111,14 @@ def _error_with_cookies(exc: HTTPException) -> JSONResponse:
 )
 async def activate(
     payload: ActivatePortalAccountRequest,
+    request: Request,
     service: CustomerPortalAuthService = Depends(get_customer_portal_auth_service),
 ) -> dict[str, Any]:
-    return await service.activate(payload.token, payload.password)
+    return await service.activate(
+        payload.token,
+        payload.password,
+        context=get_request_context(request),
+    )
 
 
 @router.post(
@@ -103,9 +133,19 @@ async def activate(
 async def login(
     payload: CustomerLoginRequest,
     response: Response,
+    request: Request,
+    background: BackgroundTasks,
     service: CustomerPortalAuthService = Depends(get_customer_portal_auth_service),
-) -> dict[str, Any]:
-    session = await service.login(payload.email, payload.password)
+) -> Any:
+    try:
+        session = await service.login(
+            payload.email,
+            payload.password,
+            background=background,
+            context=get_request_context(request),
+        )
+    except HTTPException as exc:
+        return _error_response(exc, background=background)
     _set_customer_cookies(response, session.pop("refresh_token"))
     return session
 
@@ -115,8 +155,10 @@ async def refresh(
     request: Request,
     service: CustomerPortalAuthService = Depends(get_customer_portal_auth_service),
 ) -> Any:
+    context = get_request_context(request)
     refresh_token = request.cookies.get(settings.customer_refresh_cookie_name)
     if not refresh_token:
+        await service.record_refresh_failure("cookie_missing", context)
         return _error_with_cookies(
             api_error(
                 status.HTTP_401_UNAUTHORIZED,
@@ -125,13 +167,22 @@ async def refresh(
             )
         )
     try:
-        return await service.refresh(refresh_token)
+        return await service.refresh(refresh_token, context=context)
     except HTTPException as exc:
         return _error_with_cookies(exc)
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, str]:
+async def logout(
+    request: Request,
+    response: Response,
+    background: BackgroundTasks,
+    service: CustomerPortalAuthService = Depends(get_customer_portal_auth_service),
+) -> dict[str, str]:
+    await service.record_logout(
+        get_request_context(request),
+        background=background,
+    )
     _clear_customer_cookies(response)
     return {"message": "Logged out"}
 
@@ -146,11 +197,14 @@ async def logout(response: Response) -> dict[str, str]:
 )
 async def forgot_password(
     payload: ForgotPasswordRequest,
+    request: Request,
     background: BackgroundTasks,
     service: PasswordResetService = Depends(get_password_reset_service),
 ) -> dict[str, str]:
     return await service.request_customer_reset(
-        payload.email, background=background
+        payload.email,
+        background=background,
+        context=get_request_context(request),
     )
 
 
@@ -171,6 +225,7 @@ async def validate_reset_password(
 )
 async def reset_password(
     payload: ResetPasswordRequest,
+    request: Request,
     background: BackgroundTasks,
     service: PasswordResetService = Depends(get_password_reset_service),
 ) -> dict[str, str]:
@@ -179,6 +234,7 @@ async def reset_password(
         payload.token,
         payload.password,
         background=background,
+        context=get_request_context(request),
     )
 
 

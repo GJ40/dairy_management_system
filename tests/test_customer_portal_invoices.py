@@ -12,12 +12,14 @@ import app.models  # noqa: F401
 from app.core.dependencies import (
     get_customer_repository,
     get_invoice_repository,
+    get_security_audit_service,
 )
 from app.core.security import create_access_token, create_customer_access_token
 from app.db.session import get_db
 from app.main import app
 from app.schemas.customer_invoices import PortalInvoiceQuery
 from app.services.customer_invoice_service import CustomerInvoiceService
+from tests.audit_helpers import FakeAuditService
 from tests.test_customer_portal_auth import (
     CREATED,
     CUSTOMER_COOKIE,
@@ -282,6 +284,20 @@ class CustomerInvoiceServiceTests(unittest.IsolatedAsyncioTestCase):
             await self.service.get_invoice(self.other_account, 1)
         self.assertEqual(other.exception.status_code, 404)
 
+    async def test_pdf_writes_customer_audit_event(self) -> None:
+        audit = FakeAuditService()
+        service = CustomerInvoiceService(  # type: ignore[arg-type]
+            self.repository,
+            self.customers,
+            audit=audit,
+        )
+        await service.generate_invoice_pdf(self.account, 1)
+        event = audit.standalone_records[-1]
+        self.assertEqual(event["event_type"], "invoice.pdf.downloaded")
+        self.assertEqual(event["actor_type"], "customer")
+        self.assertEqual(event["actor_account_id"], self.account.id)
+        self.assertEqual(event["metadata"]["scope"], "customer")
+
     async def test_pdf_is_scoped_and_valid(self) -> None:
         content, filename = await self.service.generate_invoice_pdf(
             self.account,
@@ -336,6 +352,8 @@ class CustomerInvoiceApiTests(unittest.IsolatedAsyncioTestCase):
         self.repository = FakeInvoiceRepository(self.invoices)
         self.repository.customers = [self.customer, self.other_customer]
 
+        self.audit = FakeAuditService()
+
         async def override_get_db():
             yield FakeSession(
                 [self.account, self.other_account],
@@ -343,6 +361,7 @@ class CustomerInvoiceApiTests(unittest.IsolatedAsyncioTestCase):
             )
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         app.dependency_overrides[get_invoice_repository] = lambda: self.repository
         app.dependency_overrides[get_customer_repository] = lambda: self.customers
         self.client = httpx.AsyncClient(

@@ -13,6 +13,7 @@ from app.core.dependencies import (
     get_customer_order_repository,
     get_customer_repository,
     get_sale_repository,
+    get_security_audit_service,
     get_stock_lock_service,
     get_stock_repository,
 )
@@ -36,6 +37,7 @@ from app.services.customer_service import CustomerService
 from app.services.sale_service import SaleService
 from app.services.stock_service import StockService
 from app.utils.time import get_business_date
+from tests.audit_helpers import FakeAuditService
 
 CREATED = datetime(2026, 10, 28, 12, 10, 23, 123000)
 TODAY = get_business_date()
@@ -214,6 +216,9 @@ class FakeCustomerRepository:
             Decimal("0"),
             total_sales - total_paid,
         )
+
+    async def flush(self) -> None:
+        return None
 
     async def commit(self) -> None:
         self.commits += 1
@@ -560,6 +565,30 @@ class CustomerServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(balance["total_paid_amount"], "400.00")
         self.assertEqual(balance["outstanding_balance"], "600.00")
 
+    async def test_customer_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = CustomerService(self.customer_repository, audit)  # type: ignore[arg-type]
+        created = await service.create_customer(
+            CreateCustomerRequest.model_validate(
+                {"name": "Audited Dairy", "rate_per_litre": 50}
+            ),
+            actor_user_id=self.admin.id,
+        )
+        self.assertEqual(audit.records[-1]["event_type"], "customer.created")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["customer_id"], created["id"]
+        )
+
+        await service.update_customer(
+            "1",
+            UpdateCustomerRequest.model_validate({"name": "Audited Update"}),
+            actor_user_id=self.admin.id,
+        )
+        self.assertEqual(audit.records[-1]["event_type"], "customer.updated")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["changed_fields"], ["name"]
+        )
+
     async def test_not_found(self) -> None:
         with self.assertRaises(HTTPException) as caught:
             await self.service.get_customer("99")
@@ -648,6 +677,37 @@ class SaleServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.sale_repository.rollbacks, 1)
 
+    async def test_sale_audit_events(self) -> None:
+        audit = FakeAuditService()
+        service = SaleService(  # type: ignore[arg-type]
+            self.sale_repository,
+            self.service.customer_repository,
+            self.service.stock_service,
+            audit=audit,
+        )
+        payload = CreateSaleRequest.model_validate(
+            {
+                "customer_id": 1,
+                "sale_date": TODAY,
+                "litres": 10,
+                "rate": 50,
+            }
+        )
+        await service.record_sale(payload, self.operator)
+        self.assertEqual(audit.records[-1]["event_type"], "sale.created")
+        self.assertEqual(audit.records[-1]["metadata"]["sale_id"], 1)
+        self.assertEqual(audit.records[-1]["metadata"]["amount"], Decimal("500.00"))
+
+        await service.update_sale(
+            "1",
+            UpdateSaleRequest.model_validate({"litres": 5}),
+            self.operator,
+        )
+        self.assertEqual(audit.records[-1]["event_type"], "sale.updated")
+        self.assertEqual(
+            audit.records[-1]["metadata"]["changed_fields"], ["litres"]
+        )
+
     async def test_permissions_and_inactive_customer(self) -> None:
         future = CreateSaleRequest.model_validate(
             {
@@ -733,10 +793,13 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
             (date.fromisoformat(TODAY), Decimal("100.00"))
         )
 
+        self.audit = FakeAuditService()
+
         async def override_get_db():
             yield FakeSession(self.admin, self.operator)
 
         app.dependency_overrides[get_db] = override_get_db
+        app.dependency_overrides[get_security_audit_service] = lambda: self.audit
         app.dependency_overrides[get_customer_repository] = (
             lambda: self.customer_repository
         )
