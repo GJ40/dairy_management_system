@@ -64,9 +64,21 @@ const refreshClient = axios.create({
   timeout: 15000,
 });
 
+function toPositiveInt(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.ceil(parsed) : null;
+}
+
 function normalizeError(error) {
   const status = error.response?.status;
   const errorData = error.response?.data?.error || error.response?.data;
+
+  // A 429 carries the remaining pause both as structured fields and as the
+  // standard Retry-After header, so the form can run a countdown without
+  // parsing the message text.
+  const retryAfter = toPositiveInt(
+    errorData?.retry_after_seconds ?? error.response?.headers?.['retry-after']
+  );
 
   return {
     status,
@@ -76,6 +88,8 @@ function normalizeError(error) {
       error.message ||
       'An unexpected server error occurred.',
     details: errorData?.details || null,
+    retryAfterSeconds: retryAfter,
+    cooldownMinutes: toPositiveInt(errorData?.cooldown_minutes),
     raw: error,
   };
 }

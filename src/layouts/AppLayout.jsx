@@ -22,6 +22,7 @@ import {
   ClipboardList,
   MessagesSquare,
   KeyRound,
+  ScrollText,
 } from 'lucide-react';
 
 export function AppLayout() {
@@ -52,6 +53,7 @@ export function AppLayout() {
     { name: 'Portal Accounts', path: '/portal-accounts', icon: KeyRound },
     { name: 'Expenses', path: '/expenses', icon: Wallet },
     { name: 'User Management', path: '/users', icon: UserCog },
+    { name: 'Security Audit', path: '/security-audit', icon: ScrollText },
   ];
 
   const todayStr = getTodayKolkataDate();

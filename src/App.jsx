@@ -33,6 +33,7 @@ import Invoices from './pages/Invoices/Invoices';
 import Reports from './pages/Reports/Reports';
 import Expenses from './pages/Expenses/Expenses';
 import UserManagement from './pages/Users/Users';
+import SecurityAudit from './pages/SecurityAudit/SecurityAudit';
 import { Link } from 'react-router-dom';
 
 export function App() {
@@ -118,6 +119,15 @@ export function App() {
               element={
                 <ProtectedRoute allowedRoles={['admin']}>
                   <UserManagement />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/security-audit"
+              element={
+                <ProtectedRoute allowedRoles={['admin']}>
+                  <SecurityAudit />
                 </ProtectedRoute>
               }
             />

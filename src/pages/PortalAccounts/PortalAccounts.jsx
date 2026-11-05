@@ -7,6 +7,7 @@ import {
   reactivatePortalAccount,
   deactivatePortalAccount,
   resetPortalAccountActivation,
+  unlockPortalAccount,
 } from '../../api/portalAccounts';
 import { getCustomers } from '../../api/customers';
 import { formatDateTime } from '../../utils/formatters';
@@ -49,6 +50,9 @@ async function fetchAllCustomers() {
 }
 
 function accountState(account) {
+  if (account.is_locked) {
+    return { label: 'Locked', color: 'bg-rose-100 text-rose-700', icon: Ban };
+  }
   if (!account.is_active) {
     return { label: 'Deactivated', color: 'bg-slate-100 text-slate-600', icon: Ban };
   }
@@ -152,6 +156,7 @@ export default function PortalAccounts() {
     const params = { page: 1, page_size: 100 };
     if (activeFilter === 'active') params.is_active = true;
     if (activeFilter === 'inactive') params.is_active = false;
+    if (activeFilter === 'locked') params.is_locked = true;
     return getPortalAccounts(params)
       .then((response) => {
         setAccounts(response?.items || []);
@@ -191,7 +196,10 @@ export default function PortalAccounts() {
       if (activeFilter === 'pending' && !(account.is_active && !account.activated_at)) {
         return false;
       }
-      if (activeFilter === 'inactive' && account.is_active) {
+      if (activeFilter === 'inactive' && (account.is_active || account.is_locked)) {
+        return false;
+      }
+      if (activeFilter === 'locked' && !account.is_locked) {
         return false;
       }
       if (!query) return true;
@@ -215,7 +223,10 @@ export default function PortalAccounts() {
   const pendingCount = accounts.filter(
     (account) => account.is_active && !account.activated_at
   ).length;
-  const inactiveCount = accounts.filter((account) => !account.is_active).length;
+  const inactiveCount = accounts.filter(
+    (account) => !account.is_active && !account.is_locked
+  ).length;
+  const lockedCount = accounts.filter((account) => account.is_locked).length;
 
   const refreshAll = async () => {
     await fetchAccounts();
@@ -299,6 +310,10 @@ export default function PortalAccounts() {
         setActivation(response?.activation || null);
         toast.success('Activation token reissued.');
       }
+      if (type === 'unlock') {
+        await unlockPortalAccount(account.id);
+        toast.success('Account unlocked. The customer can sign in again.');
+      }
       await refreshAll();
     } catch (err) {
       toast.error(err?.message || 'Could not update this account.');
@@ -362,6 +377,7 @@ export default function PortalAccounts() {
           { key: 'active', label: `Active (${activeCount})` },
           { key: 'pending', label: `Pending (${pendingCount})` },
           { key: 'inactive', label: `Deactivated (${inactiveCount})` },
+          { key: 'locked', label: `Locked (${lockedCount})` },
         ].map(({ key, label }) => (
           <button
             key={key}
@@ -621,6 +637,16 @@ export default function PortalAccounts() {
                   </div>
 
                   <div className="mb-5 flex flex-wrap gap-2">
+                    {detail.is_locked && (
+                      <button
+                        type="button"
+                        onClick={() => runLifecycle('unlock', detail)}
+                        disabled={actionLoading}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        <ShieldCheck className="h-4 w-4" /> Unlock account
+                      </button>
+                    )}
                     {detail.is_active && !detail.activated_at && (
                       <button
                         type="button"
@@ -631,7 +657,7 @@ export default function PortalAccounts() {
                         <RotateCcw className="h-4 w-4" /> Reissue activation token
                       </button>
                     )}
-                    {detail.is_active ? (
+                    {detail.is_active && !detail.is_locked ? (
                       <button
                         type="button"
                         onClick={() => openDeactivate(detail)}

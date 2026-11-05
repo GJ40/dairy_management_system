@@ -1,7 +1,9 @@
 import { useState } from 'react';
 import { Link, Navigate, useLocation, useNavigate } from 'react-router-dom';
 import { useCustomerAuth } from '../../hooks/useCustomerAuth';
+import { useLoginCooldown } from '../../hooks/useLoginCooldown';
 import ErrorAlert from '../../components/ErrorAlert';
+import CooldownNotice from '../../components/CooldownNotice';
 import {
   Milk,
   Mail,
@@ -15,6 +17,7 @@ import {
 
 export function CustomerLogin() {
   const { login, isAuthenticated, isLoading } = useCustomerAuth();
+  const cooldown = useLoginCooldown('customer');
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -34,6 +37,9 @@ export function CustomerLogin() {
     event.preventDefault();
     setFormError(null);
 
+    // Enforced server-side as well; this only keeps a reopened tab honest.
+    if (cooldown.isBlocked) return;
+
     const trimmedEmail = email.trim();
     if (!trimmedEmail || !password) {
       setFormError('Enter your portal email and password.');
@@ -45,6 +51,13 @@ export function CustomerLogin() {
       await login(trimmedEmail, password);
       navigate(from, { replace: true });
     } catch (err) {
+      if (err?.code === 'TOO_MANY_ATTEMPTS') {
+        cooldown.start(
+          err.retryAfterSeconds ?? (err.cooldownMinutes || 0) * 60,
+          err.cooldownMinutes,
+        );
+        return;
+      }
       setFormError(
         err?.message ||
         'Invalid email or password. Please check your credentials.'
@@ -85,6 +98,14 @@ export function CustomerLogin() {
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
         <div className="rounded-2xl border border-slate-100 bg-white px-6 py-8 shadow-2xl sm:px-10">
           <form className="space-y-5" onSubmit={handleSubmit}>
+            {cooldown.isBlocked && (
+              <CooldownNotice
+                remainingSeconds={cooldown.remainingSeconds}
+                clock={cooldown.clock}
+                pauseMinutes={cooldown.pauseMinutes}
+                resetHref="/portal/forgot-password"
+              />
+            )}
             <ErrorAlert
               error={formError}
               onDismiss={() => setFormError(null)}
@@ -107,7 +128,7 @@ export function CustomerLogin() {
                   type="email"
                   autoComplete="email"
                   required
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || cooldown.isBlocked}
                   value={email}
                   onChange={(event) => setEmail(event.target.value)}
                   placeholder="you@example.com"
@@ -141,7 +162,7 @@ export function CustomerLogin() {
                   type={showPassword ? 'text' : 'password'}
                   autoComplete="current-password"
                   required
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || cooldown.isBlocked}
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                   placeholder="••••••••••••"
@@ -164,7 +185,7 @@ export function CustomerLogin() {
 
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || cooldown.isBlocked}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {isSubmitting ? (
@@ -172,6 +193,8 @@ export function CustomerLogin() {
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Signing in...
                 </>
+              ) : cooldown.isBlocked ? (
+                `Sign-in paused (${cooldown.clock})`
               ) : (
                 'Sign in'
               )}
