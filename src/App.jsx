@@ -34,6 +34,7 @@ import Reports from './pages/Reports/Reports';
 import Expenses from './pages/Expenses/Expenses';
 import UserManagement from './pages/Users/Users';
 import SecurityAudit from './pages/SecurityAudit/SecurityAudit';
+import EmailSettings from './pages/EmailSettings/EmailSettings';
 import { Link } from 'react-router-dom';
 
 export function App() {
@@ -128,6 +129,15 @@ export function App() {
               element={
                 <ProtectedRoute allowedRoles={['admin']}>
                   <SecurityAudit />
+                </ProtectedRoute>
+              }
+            />
+
+            <Route
+              path="/email-settings"
+              element={
+                <ProtectedRoute allowedRoles={['admin']}>
+                  <EmailSettings />
                 </ProtectedRoute>
               }
             />
