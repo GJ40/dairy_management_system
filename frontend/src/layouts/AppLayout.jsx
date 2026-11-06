@@ -20,6 +20,7 @@ import {
   ShieldCheck,
   UserCheck,
   ClipboardList,
+  Mail,
   MessagesSquare,
   KeyRound,
   ScrollText,
@@ -53,6 +54,7 @@ export function AppLayout() {
     { name: 'Portal Accounts', path: '/portal-accounts', icon: KeyRound },
     { name: 'Expenses', path: '/expenses', icon: Wallet },
     { name: 'User Management', path: '/users', icon: UserCog },
+    { name: 'Email & Notifications', path: '/email-settings', icon: Mail },
     { name: 'Security Audit', path: '/security-audit', icon: ScrollText },
   ];
 

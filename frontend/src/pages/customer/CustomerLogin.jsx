@@ -68,7 +68,7 @@ export function CustomerLogin() {
   };
 
   return (
-    <div className="flex min-h-screen flex-col justify-center bg-gradient-to-br from-emerald-950 via-slate-900 to-emerald-900 px-4 py-12 sm:px-6">
+    <div className="flex min-h-screen flex-col justify-center bg-linear-to-br from-emerald-950 via-slate-900 to-emerald-900 px-4 py-12 sm:px-6">
       <div className="sm:mx-auto sm:w-full sm:max-w-md">
         <Link
           to="/"
