@@ -3,7 +3,15 @@ from __future__ import annotations
 import math
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, Body, Depends, Request, Response, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    Request,
+    Response,
+    status,
+)
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 
@@ -187,6 +195,7 @@ async def get_invoice(
 async def record_payment(
     invoice_id: str,
     request: Request,
+    background: BackgroundTasks,
     body: dict[str, Any] = Body(...),
     user: User = Depends(require_roles("admin", "operator")),
     service: InvoiceService = Depends(get_invoice_service),
@@ -201,5 +210,6 @@ async def record_payment(
             payload,
             actor_user_id=user.id,
             context=get_request_context(request),
+            background=background,
         )
     }

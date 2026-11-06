@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.core.dependencies import (
     get_customer_repository,
     get_invoice_repository,
+    get_payment_receipt_dispatch,
     get_sale_repository,
     get_security_audit_service,
 )
@@ -624,12 +625,21 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.audit = FakeAuditService()
+        self.receipts: list[dict[str, object]] = []
+
+        async def record_receipt(**kwargs: object) -> None:
+            self.receipts.append(kwargs)
 
         async def override_get_db():
             yield FakeSession(self.admin, self.operator)
 
         app.dependency_overrides[get_db] = override_get_db
         app.dependency_overrides[get_security_audit_service] = lambda: self.audit
+        # The real dispatcher opens its own database session and SMTP
+        # connection after the response; recording it keeps the test hermetic.
+        app.dependency_overrides[get_payment_receipt_dispatch] = (
+            lambda: record_receipt
+        )
         app.dependency_overrides[get_customer_repository] = (
             lambda: self.customer_repository
         )
@@ -699,6 +709,12 @@ class ApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(payment.status_code, 200)
         self.assertEqual(payment.json()["invoice"]["status"], "paid")
+
+        self.assertEqual(len(self.receipts), 1)
+        self.assertEqual(self.receipts[0]["invoice_id"], invoice["id"])
+        self.assertEqual(
+            Decimal(str(self.receipts[0]["payment_amount"])), Decimal("800")
+        )
 
         pdf = await self.client.get(
             f"/api/v1/invoices/{invoice['id']}/pdf",

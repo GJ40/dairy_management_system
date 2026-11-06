@@ -6,7 +6,7 @@ from datetime import date, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from fastapi import status
+from fastapi import BackgroundTasks, status
 
 from app.core.config import settings
 from app.core.errors import api_error
@@ -30,12 +30,21 @@ from app.schemas.customer_orders_staff import (
     serialize_staff_order_summary,
 )
 from app.services.invoice_service import InvoiceService
+from app.services.order_email_service import OrderEmailDispatch
 from app.services.security_audit_service import SecurityAuditService
 from app.services.stock_lock import StockLockService
 from app.services.stock_service import StockService
+from app.utils.tasks import deliver_or_queue
 from app.utils.time import business_now, business_now_naive
 
 MONEY = Decimal("0.01")
+
+# Notification events dispatched after each transition commits.
+ORDER_SUBMITTED = "order.submitted"
+ORDER_APPROVED = "order.approved"
+ORDER_REJECTED = "order.rejected"
+ORDER_CANCELLED = "order.cancelled"
+ORDER_FULFILLED = "order.fulfilled"
 
 
 class CustomerOrderService:
@@ -49,6 +58,7 @@ class CustomerOrderService:
         invoice_service: InvoiceService | None = None,
         stock_lock: StockLockService | None = None,
         audit: SecurityAuditService | None = None,
+        email_dispatch: OrderEmailDispatch | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
@@ -57,6 +67,9 @@ class CustomerOrderService:
         self.invoice_service = invoice_service
         self.stock_lock = stock_lock
         self.audit = audit
+        # Optional so every existing caller (and test) keeps working: with no
+        # dispatcher configured, order transitions simply send nothing.
+        self.email_dispatch = email_dispatch
 
     async def _record(
         self,
@@ -80,6 +93,22 @@ class CustomerOrderService:
             metadata=metadata,
         )
 
+    async def _notify_order(
+        self,
+        event_key: str,
+        order_id: int,
+        background: BackgroundTasks | None,
+    ) -> None:
+        """Queue the order notification; only called after a commit."""
+        if self.email_dispatch is None:
+            return
+        await deliver_or_queue(
+            background,
+            self.email_dispatch,
+            event_key=event_key,
+            order_id=order_id,
+        )
+
     @asynccontextmanager
     async def _lock(self):
         if self.stock_lock is None:
@@ -96,6 +125,7 @@ class CustomerOrderService:
         requested_date: date,
         note: str | None,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         customer = await self.customer_repository.get_by_id(account.customer_id)
         if customer is None or not customer.is_active:
@@ -182,6 +212,7 @@ class CustomerOrderService:
             raise
         await self.repository.refresh(order)
 
+        await self._notify_order(ORDER_SUBMITTED, order.id, background)
         return {"order": serialize_order_summary(order)}
 
     async def list_orders(
@@ -249,6 +280,7 @@ class CustomerOrderService:
         reason: str | None,
         *,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         order = await self._get_owned(account, order_id)
         if order.status != "submitted":
@@ -287,6 +319,7 @@ class CustomerOrderService:
             raise
         await self.repository.refresh(order)
 
+        await self._notify_order(ORDER_CANCELLED, order.id, background)
         return {"order": serialize_order_summary(order)}
 
     async def staff_list_orders(self, query: StaffOrderQuery) -> dict[str, Any]:
@@ -358,6 +391,7 @@ class CustomerOrderService:
         note: str | None,
         *,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         async with self._lock():
             order = await self._get_any(order_id)
@@ -395,6 +429,9 @@ class CustomerOrderService:
                 },
             )
 
+        # Queued after the lock is released: an inline send would otherwise run
+        # SMTP while the stock lock (and its transaction) is still held.
+        await self._notify_order(ORDER_APPROVED, order.id, background)
         return {"order": await self._staff_detail(order)}
 
     async def reject(
@@ -404,6 +441,7 @@ class CustomerOrderService:
         reason: str,
         *,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         order = await self._get_any(order_id)
         if order.status != "submitted":
@@ -438,6 +476,7 @@ class CustomerOrderService:
                 },
             },
         )
+        await self._notify_order(ORDER_REJECTED, order.id, background)
         return {"order": await self._staff_detail(order)}
 
     async def fulfil(
@@ -446,6 +485,7 @@ class CustomerOrderService:
         order_id: int,
         *,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         async with self._lock():
             order = await self._get_any(order_id)
@@ -511,6 +551,7 @@ class CustomerOrderService:
                 },
             )
 
+        await self._notify_order(ORDER_FULFILLED, order.id, background)
         detail = await self._staff_detail(order)
         return {
             "order": detail,
@@ -525,6 +566,7 @@ class CustomerOrderService:
         reason: str,
         *,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         async with self._lock():
             order = await self._get_any(order_id)
@@ -562,6 +604,7 @@ class CustomerOrderService:
                 },
             )
 
+        await self._notify_order(ORDER_CANCELLED, order.id, background)
         return {"order": await self._staff_detail(order)}
 
     async def _assert_stock_available(self, order: Any) -> None:

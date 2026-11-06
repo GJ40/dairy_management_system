@@ -289,6 +289,73 @@ EVENT_DEFINITIONS: Mapping[str, AuditEventDefinition] = MappingProxyType(
         "security.audit.write_failed": _event(
             "critical", "failure", SYSTEM, ("attempted_event_type", "error_class")
         ),
+        # --- Email and notification settings -----------------------------
+        "email.smtp_draft_created": _event(
+            "info", "success", STAFF, ("profile_id", "provider_mode")
+        ),
+        "email.smtp_draft_updated": _event(
+            "warning", "success", STAFF, ("profile_id", "changed_fields")
+        ),
+        "email.smtp_connection_tested": _event(
+            "info", "success", STAFF, ("profile_id", "test_status")
+        ),
+        "email.smtp_connection_test_failed": _event(
+            "warning", "failure", STAFF, ("profile_id", "reason_code")
+        ),
+        "email.smtp_test_email_sent": _event(
+            "info", "success", STAFF, ("profile_id", "test_status")
+        ),
+        "email.smtp_test_email_failed": _event(
+            "warning", "failure", STAFF, ("profile_id", "reason_code")
+        ),
+        "email.smtp_activated": _event(
+            "critical",
+            "success",
+            STAFF,
+            ("profile_id", "previous_profile_id", "previous_source"),
+        ),
+        "email.smtp_profile_archived": _event(
+            "warning", "success", STAFF, ("profile_id",)
+        ),
+        "email.smtp_environment_fallback_enabled": _event(
+            "warning", "success", STAFF, ("previous_profile_id",)
+        ),
+        "email.sender_created": _event(
+            "warning", "success", STAFF, ("sender_id", "is_active")
+        ),
+        "email.sender_updated": _event(
+            "warning", "success", STAFF, ("sender_id", "changed_fields")
+        ),
+        "email.sender_activated": _event(
+            "warning", "success", STAFF, ("sender_id",)
+        ),
+        "email.sender_deactivated": _event(
+            "warning", "success", STAFF, ("sender_id",)
+        ),
+        "email.sender_removed": _event(
+            "warning", "success", STAFF, ("sender_id",)
+        ),
+        "email.workflow_mapping_updated": _event(
+            "warning",
+            "success",
+            STAFF,
+            ("scope", "mapping_key", "changed_fields"),
+        ),
+        "email.notification_recipient_created": _event(
+            "info", "success", STAFF, ("recipient_id", "scope", "mapping_key")
+        ),
+        "email.notification_recipient_updated": _event(
+            "warning", "success", STAFF, ("recipient_id", "changed_fields")
+        ),
+        "email.notification_recipient_deactivated": _event(
+            "warning", "success", STAFF, ("recipient_id",)
+        ),
+        "email.notification_recipient_removed": _event(
+            "warning", "success", STAFF, ("recipient_id",)
+        ),
+        "email.delivery_failed": _event(
+            "warning", "failure", SYSTEM, ("event_key", "reason_code")
+        ),
     }
 )
 

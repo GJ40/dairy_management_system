@@ -3,12 +3,28 @@ from __future__ import annotations
 import html as html_module
 import logging
 import smtplib
+from collections.abc import Callable
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 import anyio
 import emails
 
+if TYPE_CHECKING:  # pragma: no cover - typing only, avoids an import cycle
+    from contextlib import AbstractAsyncContextManager
+
+    from app.services.email_config_resolver import (
+        EmailConfigResolver,
+        EmailMessageConfig,
+    )
+
+    # A provider, not a resolver: the send may happen in a background task after
+    # the request session is closed, so every resolution opens its own session.
+    ResolverProvider = Callable[[], AbstractAsyncContextManager["EmailConfigResolver"]]
+
 from app.core.config import settings
+from app.services.email_config_resolver import EmailConfigurationError
+from app.services.email_workflow_catalogue import category_of_event
 from app.utils.time import business_timezone
 
 logger = logging.getLogger(__name__)
@@ -20,6 +36,12 @@ LOOPBACK_HOSTS = {"localhost", "127.0.0.1", "::1"}
 BRAND_NAME = "AmritDhara Dairy"
 BRAND_TAGLINE = "Dairy Operations"
 SUPPORT_LINE = "If you did not request this, you can safely ignore this email."
+
+
+def _account_event_key(action: str, audience: str) -> str:
+    """Catalogue key for one account email, chosen by its audience."""
+    scope = "staff" if audience.strip().lower() == "staff" else "customer"
+    return f"account.{scope}_{action}"
 
 
 def _escape(value: str) -> str:
@@ -63,6 +85,7 @@ def _layout(
     preheader: str = "",
     status_label: str | None = None,
     tone: str = "info",
+    footer_disclaimer: str = "Automated security message",
 ) -> str:
     """Shared responsive shell: inline styles only, no external assets.
 
@@ -119,7 +142,7 @@ def _layout(
                   {BRAND_NAME} &middot; Anand, Gujarat &middot; Asia/Kolkata
                 </p>
                 <p style="margin:0;font-size:11px;line-height:1.6;color:#94a3b8;">
-                  Automated security message &middot; {_escape(settings.mail_from_email)} &middot; please do not reply
+                  {_escape(footer_disclaimer)} &middot; {_escape(settings.mail_from_email)} &middot; please do not reply
                 </p>
               </td>
             </tr>
@@ -235,7 +258,16 @@ class EmailService:
     logged instead, so password-reset links stay testable without a mail server.
     A delivery failure is logged and swallowed — it must never turn a valid
     request into a 500.
+
+    ``resolver_provider`` is optional on purpose. With one (see
+    ``get_email_service``) the account, security and portal emails read their
+    transport, From and Reply-To from the workflow mappings, exactly like the
+    order notifications do. Without one, ``EmailService()`` keeps the
+    environment behaviour that every direct caller and test relies on.
     """
+
+    def __init__(self, resolver_provider: "ResolverProvider | None" = None) -> None:
+        self.resolver_provider = resolver_provider
 
     async def send_password_reset(
         self,
@@ -278,6 +310,7 @@ class EmailService:
             )
         )
         return await self._deliver(
+            event_key=_account_event_key("password_reset", audience),
             to=to,
             subject="Reset your password — AmritDhara Dairy",
             html=_layout(
@@ -346,6 +379,7 @@ class EmailService:
             + _paragraph(SUPPORT_LINE)
         )
         return await self._deliver(
+            event_key=_account_event_key("password_changed", audience),
             to=to,
             subject="Your password was changed — AmritDhara Dairy",
             html=_layout(
@@ -440,6 +474,7 @@ class EmailService:
             )
         )
         return await self._deliver(
+            event_key=_account_event_key("failed_login_alert", scope),
             to=to,
             subject="Security alert: failed sign-in attempts — AmritDhara Dairy",
             html=_layout(
@@ -536,6 +571,7 @@ class EmailService:
             )
         )
         return await self._deliver(
+            event_key=_account_event_key("account_locked", scope),
             to=to,
             subject="Security alert: account locked — AmritDhara Dairy",
             html=_layout(
@@ -616,6 +652,7 @@ class EmailService:
             )
         )
         return await self._deliver(
+            event_key="portal.customer_activation",
             to=to,
             subject="Activate your customer portal account — AmritDhara Dairy",
             html=_layout(
@@ -649,6 +686,233 @@ class EmailService:
             link=activation_url,
         )
 
+    async def send_support_query_answered(
+        self,
+        *,
+        to: str,
+        name: str,
+        query_no: str,
+        subject: str,
+        portal_url: str,
+    ) -> bool:
+        """Tell a customer that the dairy replied to their support query.
+
+        Deliberately carries no message body: the reply may contain details the
+        dairy does not want sitting in an inbox indefinitely, so the email only
+        points at the portal.
+        """
+        body = (
+            _paragraph(f"Hello {_escape(name or 'there')},")
+            + _paragraph(
+                "The dairy has replied to your support query. Open the "
+                "customer portal to read the answer and continue the "
+                "conversation there."
+            )
+            + _section_label("Your query")
+            + _details_table(
+                [
+                    ("Query number", f"<strong>{_escape(query_no)}</strong>"),
+                    ("Subject", _escape(subject or "Support query")),
+                    ("Status", "Answered"),
+                ]
+            )
+            + _button("Open my queries", portal_url)
+            + _steps(
+                [
+                    "Sign in to the customer portal and open Support.",
+                    "Read the reply and add a message if you need more help.",
+                    "A closed query can still be read, but no new messages "
+                    "can be added to it.",
+                ]
+            )
+            + _callout(
+                "Why no reply in this email?",
+                "The answer stays in the portal so the whole conversation "
+                "stays together - this email only lets you know it is there.",
+                tone="info",
+            )
+        )
+        return await self._deliver(
+            event_key="support.query_answered",
+            to=to,
+            subject=f"We replied to your query · {query_no} — AmritDhara Dairy",
+            html=_layout(
+                heading="Your query has been answered",
+                body_html=body,
+                preheader=f"The dairy replied to query {query_no}.",
+                status_label="Answered",
+                tone="success",
+                footer_note=(
+                    "You are receiving this because you raised a support "
+                    "query in the customer portal."
+                ),
+            ),
+            text=(
+                f"Hello {name or 'there'},\n\n"
+                "YOUR QUERY HAS BEEN ANSWERED\n\n"
+                "The dairy has replied to your support query. Open the "
+                "customer portal to read the answer.\n\n"
+                f"  Query number: {query_no}\n"
+                f"  Subject:      {subject or 'Support query'}\n"
+                "  Status:       Answered\n\n"
+                f"Open your queries:\n{portal_url}\n\n"
+                "The reply is kept in the portal so the whole conversation "
+                "stays together.\n\n"
+                f"{SUPPORT_LINE}\n"
+            ),
+            link=portal_url,
+        )
+
+    async def _deliver_with_resolver(
+        self,
+        event_key: str,
+        *,
+        to: str,
+        subject: str,
+        html: str,
+        text: str,
+        link: str | None = None,
+    ) -> bool:
+        """Deliver through the resolver; never raises, like the environment path."""
+        assert self.resolver_provider is not None
+        try:
+            async with self.resolver_provider() as resolver:
+                config = await resolver.resolve(
+                    event_key,
+                    category_key=category_of_event(event_key),
+                )
+        except EmailConfigurationError as exc:
+            # Same local convenience as the environment path: the link is a live
+            # credential and is only echoed outside production.
+            link_note = f" Link: {link}" if link and not settings.is_production else ""
+            logger.warning(
+                "%r for %s was not sent: %s (%s).%s",
+                subject,
+                to,
+                exc,
+                exc.code,
+                link_note,
+            )
+            return False
+        except Exception:
+            logger.exception(
+                "Resolving the sender for %r to %s failed", subject, to
+            )
+            return False
+
+        return await self.send_with_config(
+            config,
+            to=to,
+            subject=subject,
+            html=html,
+            text=text,
+        )
+
+    async def send_with_config(
+        self,
+        config: "EmailMessageConfig",
+        *,
+        to: str,
+        subject: str,
+        html: str,
+        text: str,
+    ) -> bool:
+        """Send one message through an already-resolved configuration.
+
+        ``EmailConfigResolver`` decides the transport, From and Reply-To per
+        send, so this path never reads SMTP settings from the environment on its
+        own. A delivery failure is logged and swallowed, exactly like
+        ``_deliver``: mail must never turn a valid request into a 500.
+        """
+        if config.source == "environment" and not settings.mail_enabled:
+            logger.warning(
+                "SMTP is not configured (SMTP_HOST is empty); %r for %s was not "
+                "sent.",
+                subject,
+                to,
+            )
+            return False
+
+        headers = {}
+        if config.reply_to_email:
+            headers["Reply-To"] = config.reply_to_email
+        message = emails.html(
+            html=html,
+            text=text,
+            subject=subject,
+            mail_from=(config.from_name, config.from_email),
+            headers=headers or None,
+        )
+
+        transport = config.transport
+        host = transport.host
+        port = transport.port
+        ssl = transport.encryption_mode == "ssl"
+        tls = transport.encryption_mode == "starttls"
+        user = transport.username
+        password = transport.password
+
+        # Only the environment transport gets the local Mailpit convenience:
+        # a database profile is used exactly as the admin configured it.
+        if (
+            config.source == "environment"
+            and not settings.is_production
+            and host.lower() in LOOPBACK_HOSTS
+            and port == MAILPIT_PLAIN_PORT
+            and (ssl or tls or user)
+        ):
+            logger.warning(
+                "SMTP %s:%s is Mailpit's default plain listener; ignoring "
+                "SMTP_USE_TLS/SMTP_USE_SSL/SMTP_USER/SMTP_PASSWORD for this send.",
+                host,
+                port,
+            )
+            ssl = tls = False
+            user = password = None
+
+        smtp_params = {
+            "host": host,
+            "port": port,
+            "ssl": ssl,
+            "tls": tls,
+            "user": user,
+            "password": password,
+            "timeout": transport.timeout_seconds,
+            "fail_silently": False,
+        }
+        logger.info(
+            "Sending %r to %s via resolved SMTP %s:%s (source=%s, tls=%s, "
+            "ssl=%s, auth=%s)",
+            subject,
+            to,
+            host,
+            port,
+            config.source,
+            tls,
+            ssl,
+            bool(user),
+        )
+
+        try:
+            response = await anyio.to_thread.run_sync(
+                lambda: message.send(to=to, smtp=smtp_params)
+            )
+        except Exception as exc:
+            logger.exception("Could not send %r to %s", subject, to)
+            logger.warning("%s", _smtp_failure_hint(host, port, exc))
+            return False
+
+        status_code = getattr(response, "status_code", None)
+        if status_code not in (None, 250):
+            logger.warning(
+                "SMTP server returned status %s while sending %r to %s",
+                status_code,
+                subject,
+                to,
+            )
+            return False
+        return True
+
     async def _deliver(
         self,
         *,
@@ -657,7 +921,18 @@ class EmailService:
         html: str,
         text: str,
         link: str | None = None,
+        event_key: str | None = None,
     ) -> bool:
+        if self.resolver_provider is not None and event_key is not None:
+            return await self._deliver_with_resolver(
+                event_key,
+                to=to,
+                subject=subject,
+                html=html,
+                text=text,
+                link=link,
+            )
+
         if not settings.mail_enabled:
             # The link is a live credential. Echoing it is a local-convenience
             # feature only; a production misconfiguration must not write reset

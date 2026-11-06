@@ -255,6 +255,7 @@ class CapturingEmailService(EmailService):
         html: str,
         text: str,
         link: str | None = None,
+        event_key: str | None = None,
     ) -> bool:
         self.payload = {
             "to": to,
@@ -262,6 +263,7 @@ class CapturingEmailService(EmailService):
             "html": html,
             "text": text,
             "link": link,
+            "event_key": event_key,
         }
         return True
 

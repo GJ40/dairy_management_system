@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 
-from app.main import app
+from app.core.config import settings
+from app.main import app, create_app
 
 
 class MiddlewareApiTests(unittest.IsolatedAsyncioTestCase):
@@ -57,6 +58,22 @@ class MiddlewareApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["access-control-allow-origin"], origin)
         self.assertEqual(response.headers["access-control-allow-credentials"], "true")
 
+    async def test_credentialed_login_preflight_mirrors_origin(self) -> None:
+        """The browser rejects a wildcard origin whenever cookies are allowed."""
+        origin = "http://localhost:5173"
+        response = await self.client.options(
+            "/api/v1/auth/login",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], origin)
+        self.assertNotEqual(response.headers["access-control-allow-origin"], "*")
+        self.assertEqual(response.headers["access-control-allow-credentials"], "true")
+
     async def test_security_headers(self) -> None:
         response = await self._health(True)
         self.assertEqual(response.headers["x-content-type-options"], "nosniff")
@@ -98,6 +115,55 @@ class MiddlewareApiTests(unittest.IsolatedAsyncioTestCase):
 
         response = await self.client.post("/health", content=chunks())
         self.assertEqual(response.status_code, 404)
+
+
+class CorsOriginConfigTests(unittest.IsolatedAsyncioTestCase):
+    """A wildcard must never reach the wire while credentials are allowed."""
+
+    async def _preflight(
+        self,
+        application,
+        origin: str,
+        path: str = "/api/v1/auth/login",
+    ) -> httpx.Response:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://testserver",
+        ) as client:
+            return await client.options(
+                path,
+                headers={
+                    "Origin": origin,
+                    "Access-Control-Request-Method": "POST",
+                },
+            )
+
+    def _app_with_cors(self, cors_origins: str, node_env: str):
+        with patch.object(settings, "cors_origins", cors_origins), patch.object(
+            settings, "node_env", node_env
+        ):
+            return create_app()
+
+    async def test_configured_wildcard_is_mirrored_not_forwarded(self) -> None:
+        application = self._app_with_cors("*", "staging")
+        origin = "http://localhost:5173"
+        response = await self._preflight(application, origin)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], origin)
+        self.assertEqual(response.headers["access-control-allow-credentials"], "true")
+
+    async def test_staging_rejects_origin_outside_the_list(self) -> None:
+        application = self._app_with_cors("http://localhost:5173", "staging")
+        response = await self._preflight(application, "http://evil.example")
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("access-control-allow-origin", response.headers)
+
+    async def test_trailing_slash_in_config_still_matches(self) -> None:
+        application = self._app_with_cors("http://localhost:5173/", "staging")
+        origin = "http://localhost:5173"
+        response = await self._preflight(application, origin)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["access-control-allow-origin"], origin)
 
 
 if __name__ == "__main__":

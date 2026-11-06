@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -27,6 +28,7 @@ from app.routers import (
     customers,
     delete,
     docs,
+    email_settings,
     expenses,
     health,
     invoices,
@@ -38,6 +40,8 @@ from app.routers import (
     users,
     wastage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -61,15 +65,28 @@ def create_app() -> FastAPI:
 
     app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.body_limit_bytes)
     app.add_middleware(SecurityHeadersMiddleware)
+
+    cors_origins = settings.cors_origin_list
+    is_development = settings.node_env.strip().lower() == "development"
+    # `Access-Control-Allow-Origin: *` is rejected by the browser on every
+    # request that carries credentials, and every frontend call sets
+    # `withCredentials`. A wildcard is therefore never forwarded to the
+    # middleware: it becomes "mirror whatever Origin asked" instead, which is
+    # the only form the browser accepts. Any other origin (development, or a
+    # configured `*`) is handled the same way for the same reason, so staging
+    # and production must still list their origins in CORS_ORIGINS.
+    allowed_origins = [origin for origin in cors_origins if origin != "*"]
+    allow_any_origin = "*" in cors_origins or is_development
+    if "*" in cors_origins and not is_development:
+        logger.warning(
+            "CORS_ORIGINS contains '*'; any origin can call the API with "
+            "credentials. List the real frontend origins instead."
+        )
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origin_list,
-        # Wildcard origins are a development convenience only: combined with
-        # credentials they let any site call this API. Staging must list its
-        # origins in CORS_ORIGINS like production does.
-        allow_origin_regex=(
-            ".*" if settings.node_env.strip().lower() == "development" else None
-        ),
+        allow_origins=allowed_origins,
+        allow_origin_regex=".*" if allow_any_origin else None,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -85,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(health.router, prefix=settings.api_v1_prefix)
     app.include_router(docs.router)
+    app.include_router(email_settings.router, prefix=settings.api_v1_prefix)
     app.include_router(auth.router, prefix=settings.api_v1_prefix)
     app.include_router(users.router, prefix=settings.api_v1_prefix)
     app.include_router(buffaloes.router, prefix=settings.api_v1_prefix)

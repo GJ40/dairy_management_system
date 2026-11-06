@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import secrets
+from collections.abc import Awaitable, Callable
 from datetime import date
 from typing import Any
 
-from fastapi import status
+from fastapi import BackgroundTasks, status
 
+from app.core.config import settings
 from app.core.errors import api_error
 from app.core.request_context import RequestContext
 from app.models.customer_portal_account import CustomerPortalAccount
@@ -27,8 +30,18 @@ from app.schemas.customer_queries import (
     serialize_staff_query,
     serialize_staff_query_detail,
 )
+from app.services.email_service import EmailService
 from app.services.security_audit_service import SecurityAuditService
-from app.utils.time import business_now, business_now_naive
+from app.utils.tasks import deliver_or_queue
+from app.utils.time import business_now, business_now_naive, utc_now_naive
+
+logger = logging.getLogger(__name__)
+
+# Internal-observer workflow events for the support-query workflow.
+SUPPORT_QUERY_RECEIVED_EVENT = "support.query_received"
+SUPPORT_QUERY_ANSWERED_EVENT = "support.query_answered"
+
+InternalDispatch = Callable[[str, dict[str, Any] | None], Awaitable[int]]
 
 OPERATOR_TRANSITIONS = {
     ("open", "in_progress"),
@@ -53,12 +66,19 @@ class CustomerQueryService:
         account_repository: CustomerPortalAccountRepository,
         user_repository: UserRepository,
         audit: SecurityAuditService | None = None,
+        *,
+        email_service: EmailService | None = None,
+        internal_dispatch: InternalDispatch | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
         self.account_repository = account_repository
         self.user_repository = user_repository
         self.audit = audit
+        # Both are optional so every existing caller (and test) keeps working:
+        # with no notifier configured, a query transition simply sends nothing.
+        self.email_service = email_service
+        self.internal_dispatch = internal_dispatch
 
     async def create(
         self,
@@ -68,6 +88,7 @@ class CustomerQueryService:
         subject: str,
         message: str,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         customer = await self.customer_repository.get_by_id(account.customer_id)
         if customer is None or not customer.is_active:
@@ -106,6 +127,20 @@ class CustomerQueryService:
                 },
             )
         await self._commit(query)
+        # Internal observers only: the customer already sees the query in the
+        # portal, so a receipt email would add noise without information.
+        await self._notify_internal(
+            SUPPORT_QUERY_RECEIVED_EVENT,
+            {
+                "occurred_at": utc_now_naive().isoformat(),
+                "account_email": account.email,
+                "account_name": getattr(customer, "name", None),
+                "query_no": query.query_no,
+                "query_subject": query.subject,
+                "query_category": query.category,
+            },
+            background=background,
+        )
         return {"query": await self._customer_detail(query)}
 
     async def list_queries(
@@ -228,6 +263,7 @@ class CustomerQueryService:
         *,
         is_internal: bool,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         query = await self._get_any(query_id)
         await self._require_assignment(
@@ -266,6 +302,14 @@ class CustomerQueryService:
                 },
             )
         await self._commit(query)
+
+        # A visible reply is the moment the customer gains new information, so
+        # that is what triggers the mail - not the status control, which staff
+        # may use alone or after replying. Skipping an already-answered query
+        # keeps a follow-up on a settled thread from mailing twice.
+        if not is_internal and query.status != "answered":
+            await self._send_reply_email(query, background=background)
+
         return {"message": serialize_staff_message(message)}
 
     async def change_status(
@@ -397,6 +441,61 @@ class CustomerQueryService:
             status.HTTP_403_FORBIDDEN,
             "QUERY_NOT_ASSIGNED",
             "This query is not assigned to you",
+        )
+
+    async def _notify_internal(
+        self,
+        event_key: str,
+        payload: dict[str, Any],
+        *,
+        background: BackgroundTasks | None,
+    ) -> None:
+        """Best-effort internal copy; never changes the query flow."""
+        if self.internal_dispatch is None:
+            return
+        try:
+            await deliver_or_queue(
+                background,
+                self.internal_dispatch,
+                event_key=event_key,
+                payload=payload,
+            )
+        except Exception:
+            logger.exception(
+                "Internal notification dispatch for %r raised", event_key
+            )
+
+    async def _send_reply_email(
+        self,
+        query: Any,
+        *,
+        background: BackgroundTasks | None,
+    ) -> None:
+        """Tell the customer the reply is waiting in the portal."""
+        if self.email_service is None:
+            return
+
+        account = await self.account_repository.get_by_id(query.account_id)
+        email = ""
+        if account is not None and account.is_active:
+            email = (account.email or "").strip().lower()
+        if not email:
+            logger.info(
+                "Query %s has no active portal address; %r not sent",
+                query.query_no,
+                SUPPORT_QUERY_ANSWERED_EVENT,
+            )
+            return
+
+        customer = await self.customer_repository.get_by_id(query.customer_id)
+        await deliver_or_queue(
+            background,
+            self.email_service.send_support_query_answered,
+            to=email,
+            name=getattr(customer, "name", None) or "there",
+            query_no=query.query_no,
+            subject=query.subject or "",
+            portal_url=f"{settings.frontend_base_url}/portal/queries",
         )
 
     async def _record_status_change(

@@ -14,6 +14,7 @@ from app.core.config import settings
 from app.core.dependencies import (
     get_customer_order_repository,
     get_customer_repository,
+    get_order_email_dispatch,
     get_security_audit_service,
 )
 from app.core.security import create_customer_access_token
@@ -514,6 +515,18 @@ class OrderApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.audit = FakeAuditService()
         app.dependency_overrides[get_security_audit_service] = lambda: self.audit
+
+        # Order notifications are dispatched after the response; the fake keeps
+        # the test off a real database session and records what was queued.
+        self.dispatched: list[tuple[str, int]] = []
+
+        async def fake_dispatch(*, event_key: str, order_id: int) -> None:
+            self.dispatched.append((event_key, order_id))
+
+        app.dependency_overrides[get_order_email_dispatch] = (
+            lambda: fake_dispatch
+        )
+
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
@@ -568,6 +581,23 @@ class OrderApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(listing.status_code, 200, listing.text)
         self.assertEqual(listing.json()["total"], 1)
         self.assertEqual(listing.json()["items"][0]["id"], order["id"])
+
+    async def test_create_and_cancel_dispatch_order_notifications(self) -> None:
+        created = await self._create()
+        self.assertEqual(created.status_code, 201, created.text)
+        order_id = created.json()["order"]["id"]
+        self.assertEqual(self.dispatched, [("order.submitted", order_id)])
+
+        cancelled = await self.client.post(
+            f"/api/v1/customer-portal/orders/{order_id}/cancel",
+            json={},
+            headers=self._auth(self.account),
+        )
+        self.assertEqual(cancelled.status_code, 200, cancelled.text)
+        self.assertEqual(
+            self.dispatched,
+            [("order.submitted", order_id), ("order.cancelled", order_id)],
+        )
 
     async def test_validation_errors(self) -> None:
         cases = (

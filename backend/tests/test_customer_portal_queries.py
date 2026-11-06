@@ -12,6 +12,8 @@ from app.core.dependencies import (
     get_customer_portal_account_repository,
     get_customer_query_repository,
     get_customer_repository,
+    get_email_service,
+    get_internal_notification_dispatch,
     get_security_audit_service,
     get_user_repository,
 )
@@ -241,6 +243,35 @@ class FakeUserRepository:
 
     async def get_by_id(self, user_id: int, *, include_deleted: bool = False):
         return next((row for row in self.users if row.id == user_id), None)
+
+
+class FakeQueryEmailService:
+    """Capture the customer mail so no test run reaches a real SMTP server."""
+
+    def __init__(self) -> None:
+        self.answered_calls: list[dict[str, Any]] = []
+        self.activation_calls: list[dict[str, Any]] = []
+
+    async def send_support_query_answered(self, **kwargs: Any) -> bool:
+        self.answered_calls.append(kwargs)
+        return True
+
+    async def send_portal_activation(self, **kwargs: Any) -> bool:
+        self.activation_calls.append(kwargs)
+        return True
+
+
+class FakeInternalDispatch:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def __call__(
+        self,
+        event_key: str,
+        payload: dict[str, Any] | None,
+    ) -> int:
+        self.calls.append((event_key, dict(payload or {})))
+        return 1
 
 
 class FakeAuditService:
@@ -632,6 +663,8 @@ class QueryApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.users = FakeUserRepository([self.admin, self.operator])
         self.audit = FakeAuditService()
+        self.email = FakeQueryEmailService()
+        self.internal = FakeInternalDispatch()
         self.repository = FakeQueryRepository()
         self.repository.queries.append(make_query(1))
         self.repository.queries.append(make_query(2, customer_id=99))
@@ -657,6 +690,13 @@ class QueryApiTests(unittest.IsolatedAsyncioTestCase):
         )
         app.dependency_overrides[get_user_repository] = lambda: self.users
         app.dependency_overrides[get_security_audit_service] = lambda: self.audit
+        # The real providers open their own database session and SMTP
+        # connection after the response; overriding both keeps this test file
+        # hermetic and still records what the routes would have queued.
+        app.dependency_overrides[get_email_service] = lambda: self.email
+        app.dependency_overrides[get_internal_notification_dispatch] = (
+            lambda: self.internal
+        )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
@@ -934,3 +974,173 @@ class QueryApiTests(unittest.IsolatedAsyncioTestCase):
             "/api/v1/customer-queries/{query_id}/assign",
         ):
             self.assertIn(path, paths)
+
+    async def test_notifications_are_queued_by_the_routes(self) -> None:
+        created = await self.client.post(
+            "/api/v1/customer-portal/queries",
+            headers=self._customer_auth(),
+            json={
+                "category": "billing",
+                "subject": "Invoice question",
+                "message": "Please check my invoice",
+            },
+        )
+        self.assertEqual(created.status_code, 201)
+        query_no = created.json()["query"]["query_no"]
+
+        self.assertEqual(len(self.internal.calls), 1)
+        event_key, payload = self.internal.calls[0]
+        self.assertEqual(event_key, "support.query_received")
+        self.assertEqual(payload["query_no"], query_no)
+        self.assertEqual(payload["account_email"], self.account.email)
+        self.assertEqual(self.email.answered_calls, [])
+
+        query_id = self.repository.queries[-1].id
+
+        # A status change on its own carries no new information for the customer.
+        status_only = await self.client.post(
+            f"/api/v1/customer-queries/{query_id}/status",
+            headers=self._staff_auth(self.admin),
+            json={"status": "in_progress"},
+        )
+        self.assertEqual(status_only.status_code, 200)
+        self.assertEqual(self.email.answered_calls, [])
+
+        reply = await self.client.post(
+            f"/api/v1/customer-queries/{query_id}/messages",
+            headers=self._staff_auth(self.admin),
+            json={"message": "We checked your invoice.", "is_internal": False},
+        )
+        self.assertEqual(reply.status_code, 201)
+        self.assertEqual(len(self.email.answered_calls), 1)
+        self.assertEqual(self.email.answered_calls[0]["to"], self.account.email)
+        self.assertEqual(self.email.answered_calls[0]["query_no"], query_no)
+
+        internal_note = await self.client.post(
+            f"/api/v1/customer-queries/{query_id}/messages",
+            headers=self._staff_auth(self.admin),
+            json={"message": "Internal reminder", "is_internal": True},
+        )
+        self.assertEqual(internal_note.status_code, 201)
+        self.assertEqual(len(self.email.answered_calls), 1)
+
+
+class QueryNotificationTests(unittest.IsolatedAsyncioTestCase):
+    """Support-query mail must stay optional, single-shot and best effort."""
+
+    def setUp(self) -> None:
+        self.customer = make_customer()
+        self.customers = FakeCustomerRepository([self.customer])
+        self.account = make_account(password="x", activated=True)
+        self.accounts = FakePortalAccountRepository([self.account])
+        self.admin = make_user()
+        self.users = FakeUserRepository([self.admin])
+        self.repository = FakeQueryRepository()
+        self.email = FakeQueryEmailService()
+        self.internal = FakeInternalDispatch()
+        self.service = CustomerQueryService(
+            self.repository,
+            self.customers,
+            self.accounts,
+            self.users,
+            FakeAuditService(),
+            email_service=self.email,
+            internal_dispatch=self.internal,
+        )
+
+    async def test_create_sends_one_internal_copy(self) -> None:
+        await self.service.create(
+            self.account,
+            category="billing",
+            subject="Invoice question",
+            message="Please check my invoice",
+        )
+
+        self.assertEqual(len(self.internal.calls), 1)
+        event_key, payload = self.internal.calls[0]
+        self.assertEqual(event_key, "support.query_received")
+        self.assertEqual(
+            payload["query_no"], self.repository.queries[0].query_no
+        )
+        self.assertEqual(payload["account_email"], self.account.email)
+        self.assertEqual(payload["account_name"], self.customer.name)
+        self.assertEqual(payload["query_subject"], "Invoice question")
+        self.assertEqual(payload["query_category"], "billing")
+        # Raising a query is not a reason to mail the customer.
+        self.assertEqual(self.email.answered_calls, [])
+
+    async def test_staff_reply_notifies_the_customer(self) -> None:
+        self.repository.queries.append(make_query(1))
+
+        await self.service.add_staff_message(
+            self.admin, 1, "We checked your invoice.", is_internal=False
+        )
+
+        self.assertEqual(len(self.email.answered_calls), 1)
+        call = self.email.answered_calls[0]
+        self.assertEqual(call["to"], self.account.email)
+        self.assertEqual(call["query_no"], "QRY-20261030-1A2B")
+        self.assertEqual(call["subject"], "Invoice question")
+        self.assertTrue(str(call["portal_url"]).endswith("/portal/queries"))
+
+    async def test_status_change_alone_sends_nothing(self) -> None:
+        """Staff may move the status without replying; there is nothing to read."""
+        self.repository.queries.append(make_query(1))
+
+        await self.service.change_status(self.admin, 1, "in_progress")
+        await self.service.change_status(self.admin, 1, "answered")
+
+        self.assertEqual(self.email.answered_calls, [])
+        self.assertEqual(self.repository.queries[0].status, "answered")
+
+    async def test_internal_note_sends_nothing(self) -> None:
+        self.repository.queries.append(make_query(1))
+
+        await self.service.add_staff_message(
+            self.admin, 1, "Customer called", is_internal=True
+        )
+
+        self.assertEqual(self.email.answered_calls, [])
+
+    async def test_reply_to_an_answered_query_sends_nothing(self) -> None:
+        self.repository.queries.append(make_query(1, status="answered"))
+
+        await self.service.add_staff_message(
+            self.admin, 1, "One more detail", is_internal=False
+        )
+
+        self.assertEqual(self.email.answered_calls, [])
+
+    async def test_inactive_account_gets_no_mail(self) -> None:
+        self.account.is_active = False
+        self.repository.queries.append(make_query(1))
+
+        await self.service.add_staff_message(
+            self.admin, 1, "We checked your invoice.", is_internal=False
+        )
+
+        self.assertEqual(self.email.answered_calls, [])
+        self.assertEqual(len(self.repository.messages), 1)
+
+    async def test_both_notifiers_are_optional(self) -> None:
+        service = CustomerQueryService(
+            self.repository,
+            self.customers,
+            self.accounts,
+            self.users,
+            FakeAuditService(),
+        )
+        self.repository.queries.append(make_query(1))
+
+        await service.create(
+            self.account,
+            category="other",
+            subject="Hello",
+            message="Body",
+        )
+        await service.add_staff_message(
+            self.admin, 1, "Reply", is_internal=False
+        )
+
+        self.assertEqual(self.email.answered_calls, [])
+        self.assertEqual(self.internal.calls, [])
