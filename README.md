@@ -69,6 +69,24 @@ The Dairy Management System is engineered for commercial dairy farming operation
 - **Support & Ticketing:** Conversational inquiry threads with categorized topics (`billing`, `order`, `delivery`, `account`, `other`). Supports staff internal notes hidden from customers.
 - **Customer Financial Hub:** Self-service viewing of outstanding balance, historical orders, and downloadable PDF invoices.
 
+### Email & Notification Settings (Admin)
+
+One Admin page, `/email-settings`, owns every transactional email the system sends. It has four tabs:
+
+- **SMTP transport:** Profiles move through `draft → tested → active`. Activation is refused until a test connection succeeds on that exact configuration (`409 SMTP_TEST_REQUIRED`, or `SMTP_CONFIG_CHANGED_SINCE_TEST` after an edit). Only one profile can be active; activating another archives the previous one, and `POST /smtp/use-environment` reverts to the `SMTP_*` variables. Credentials are encrypted with Fernet using `EMAIL_SETTINGS_ENCRYPTION_KEY` and are **write-only**: no response, audit row or log line contains a username, a password or ciphertext.
+- **Sender identities:** Named From addresses with an optional Reply-To, activated or deactivated without losing history.
+- **Workflow mappings:** From and Reply-To can be set at application, category and event level, with the level nearest the event winning. Events whose silence would be unsafe (account security, portal activation) cannot be disabled; order, support and billing events can.
+- **Internal recipients:** Opt-in internal addresses per category or event, deduplicated, that receive a facts-only `[Internal] …` summary — never the customer's message, a reset link or invoice detail.
+
+**Workflows:** 17 events in five categories — 8 account/security alerts, portal activation, the 5 order lifecycle mails, 2 support-query mails (an internal copy when a query arrives, and a customer notice when staff post a visible reply) and the payment receipt. Delivery is best effort: a failure is logged and the request still succeeds, and mail is simply disabled while neither an active database profile nor `SMTP_HOST` is configured.
+
+**What changed in this delivery:**
+
+- Migration `0007_email_notification_settings` adds four tables — `email_smtp_profiles`, `email_sender_identities`, `email_workflow_mappings`, `email_notification_recipients`. No existing table is altered, and `alembic downgrade 0006_login_lockout` drops them again.
+- Admin API under `/api/v1/email-settings` (24 routes, Admin only), plus the resolver that now supplies transport, From and Reply-To to every workflow, including the five account/security/portal emails that previously hardcoded `MAIL_FROM_*`/`SMTP_*`.
+- Admin UI in `frontend/src/pages/EmailSettings/`, wired into the Administration navigation.
+- Deployment: `docker-compose.yaml` and [section 13](#13-environment-variables-reference) now pass `EMAIL_SETTINGS_ENCRYPTION_KEY` and `EMAIL_SETTINGS_ENCRYPTION_KEY_PREVIOUS` to the backend container.
+
 ---
 
 ## 3. Original vs. Extended Functionality
@@ -84,7 +102,7 @@ The repository contains two historical checkpoints across its Git branches: the 
 | **Inventory Locking** | Standard DB transactions | MySQL advisory locking (`GET_LOCK('dairy:stock')`) + reservation tracking | Fully Implemented |
 | **Fulfilment** | Manual sale entry | 1-click staff fulfilment auto-generates linked `Sale` + `Invoice` | Fully Implemented |
 | **Customer Support** | None | Multi-message ticketing system with private staff internal notes | Fully Implemented |
-| **Notifications** | None (email used as login identifier only) | Asynchronous transactional email (FastAPI `BackgroundTasks` + SMTP) | Fully Implemented |
+| **Notifications** | None (email used as login identifier only) | Asynchronous transactional email (FastAPI `BackgroundTasks` + SMTP), with Admin-managed SMTP transport, sender identities, per-workflow mappings and internal recipients at `/email-settings` | Fully Implemented |
 | **Password Recovery** | Admin-assigned passwords | Self-service email password reset with SHA-256 single-use tokens | Fully Implemented |
 | **Session Control** | JWT expiration only | `token_version` tracking on users and customer portal accounts | Fully Implemented |
 | **Database Engine** | PRD proposed PostgreSQL/SQLite | Engineered for MySQL 8 (`utf8mb4`) with SQLAlchemy async | Verified Active Engine |
@@ -99,7 +117,7 @@ The repository contains two historical checkpoints across its Git branches: the 
 - **Package & Dependency Manager:** `uv` (`pyproject.toml`, `uv.lock`)
 - **ORM & Data Layer:** SQLAlchemy `2.1.6` (Async Engine with `asyncmy` driver)
 - **Database Engine:** MySQL 8 (`utf8mb4` character set, InnoDB engine)
-- **Database Migrations:** Alembic `1.20.1` (Revisions 0001 through 0006, idempotent)
+- **Database Migrations:** Alembic `1.20.1` (Revisions 0001 through 0007, idempotent)
 - **Security & Tokens:** `pyjwt` 2.15.1, `bcrypt` 5.0.0, cryptographic `secrets` module
 - **PDF Generation:** ReportLab `5.1.0` (vector drawing, standard fonts, tabular formatting)
 - **Email Service:** `emails` 1.1.3 (asynchronous SMTP delivery via FastAPI `BackgroundTasks`)
@@ -511,6 +529,10 @@ erDiagram
 15. `customer_queries`: Support tickets with category, subject, tracking number (`QRY-YYYYMMDD-XXXX`), and assignment.
 16. `customer_query_messages`: Conversational messages within support tickets, including flag `is_internal` for staff-only notes.
 17. `password_reset_tokens`: SHA-256 token hashes for single-use staff and customer password recovery (30-minute TTL).
+18. `email_smtp_profiles`: SMTP transports in `draft`/`active`/`archived` state, with a unique active slot, test result and configuration fingerprint; username and password are Fernet ciphertext columns and are never selected by a read model.
+19. `email_sender_identities`: Selectable From identities (display name, address, optional Reply-To) with an active flag and a usage count that blocks deletion.
+20. `email_workflow_mappings`: Scoped sender and Reply-To overrides plus the per-event enable flag, keyed `application:default`, `category:<key>` or `event:<key>`.
+21. `email_notification_recipients`: Internal addresses per category or event, unique per `(mapping_key, email)`, with an active flag.
 
 ---
 
@@ -623,6 +645,7 @@ All backend endpoints are prefixed with `/api/v1`. Interactive Swagger documenta
 - **Portal Accounts Management:** `GET`, `POST /api/v1/customer-portal-accounts`, `GET /api/v1/customer-portal-accounts/{id}`, `POST /api/v1/customer-portal-accounts/{id}/reactivate`, `POST /api/v1/customer-portal-accounts/{id}/deactivate`, `POST /api/v1/customer-portal-accounts/{id}/reset-activation`
 - **Customer Orders Queue:** `GET /api/v1/customer-orders`, `GET /api/v1/customer-orders/{id}`, `POST /api/v1/customer-orders/{id}/approve`, `POST /api/v1/customer-orders/{id}/reject`, `POST /api/v1/customer-orders/{id}/fulfil`, `POST /api/v1/customer-orders/{id}/cancel`
 - **Customer Queries Queue:** `GET /api/v1/customer-queries`, `GET /api/v1/customer-queries/{id}`, `POST /api/v1/customer-queries/{id}/messages`, `POST /api/v1/customer-queries/{id}/status`, `POST /api/v1/customer-queries/{id}/assign`
+- **Email & Notification Settings (Admin only):** `GET /api/v1/email-settings/smtp` (overview), `POST /api/v1/email-settings/smtp/profiles`, `GET`, `PATCH /api/v1/email-settings/smtp/profiles/{id}`, `POST /api/v1/email-settings/smtp/profiles/{id}/test-connection`, `…/test-email`, `…/activate`, `POST /api/v1/email-settings/smtp/use-environment`, `GET`, `POST /api/v1/email-settings/senders`, `GET`, `PATCH`, `DELETE /api/v1/email-settings/senders/{id}`, `POST /api/v1/email-settings/senders/{id}/activate`, `…/deactivate`, `GET /api/v1/email-settings/workflows`, `GET`, `PUT /api/v1/email-settings/workflow-mappings`, `GET`, `POST /api/v1/email-settings/recipients`, `GET`, `PATCH`, `DELETE /api/v1/email-settings/recipients/{id}`, `POST /api/v1/email-settings/recipients/{id}/activate`, `…/deactivate`. Credentials are write-only: no response ever contains a username, password or ciphertext
 
 ### Customer Endpoints
 - **Customer Auth:**
@@ -761,6 +784,8 @@ npm run dev
 | `MAIL_FROM_EMAIL` | `no-reply@dairyfarm.com` | Sender address for transactional emails |
 | `MAIL_FROM_NAME` | `AmritDhara Dairy` | Sender display name |
 | `PASSWORD_RESET_TTL_MINUTES` | `30` | Password reset link validity duration |
+| `EMAIL_SETTINGS_ENCRYPTION_KEY` | `""` | Fernet key that encrypts SMTP credentials stored by `/email-settings`; required before a credential-bearing profile can be activated |
+| `EMAIL_SETTINGS_ENCRYPTION_KEY_PREVIOUS` | `""` | Previous Fernet key kept during rotation; decryption accepts either key |
 | `LOGIN_COOLDOWN_THRESHOLD` | `5` | Wrong passwords that start the temporary sign-in pause |
 | `LOGIN_COOLDOWN_MINUTES` | `5` | Length of the sign-in pause; embedded in the 429 message and the login-page countdown |
 | `LOGIN_LOCKOUT_THRESHOLD` | `10` | Counted failures that hard-lock the account; the lock has no timer and only an administrator can clear it |
@@ -793,7 +818,7 @@ cd backend_py
 # Check current revision status
 uv run alembic current
 
-# Upgrade schema to the latest revision (0001 -> 0006)
+# Upgrade schema to the latest revision (0001 -> 0007)
 uv run alembic upgrade head
 
 # Rollback one migration revision
@@ -869,6 +894,9 @@ ADMIN_PASSWORD=change-me
 # A mail container on dairy_network. Do not use 127.0.0.1 here: inside the
 # backend container that is the container itself, not your host.
 SMTP_HOST=mailpit
+# Required before an Admin can save SMTP credentials in /email-settings.
+# Generate once with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+EMAIL_SETTINGS_ENCRYPTION_KEY=<generated key>
 ```
 *(In Docker Compose, the database host is automatically routed to the `db` service container, so leave `DB_HOST` alone — it is not read from the root `.env`.)*
 

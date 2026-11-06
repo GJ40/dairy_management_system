@@ -138,6 +138,14 @@ services:
       MAIL_FROM_EMAIL: ${MAIL_FROM_EMAIL:-no-reply@dairyfarm.com}
       MAIL_FROM_NAME: ${MAIL_FROM_NAME:-AmritDhara Dairy}
       PASSWORD_RESET_TTL_MINUTES: ${PASSWORD_RESET_TTL_MINUTES:-30}
+      # Database-managed email settings (Administration -> Email & Notifications).
+      # The key encrypts the SMTP credentials an Admin saves in MySQL; generate it
+      # with cryptography's Fernet.generate_key() and keep it out of Git. While it
+      # is empty an unauthenticated draft (Mailpit) can still be saved, but any
+      # write that has to encrypt fails with ENCRYPTION_KEY_UNAVAILABLE.
+      EMAIL_SETTINGS_ENCRYPTION_KEY: ${EMAIL_SETTINGS_ENCRYPTION_KEY:-}
+      # Rotation only: the previous key still decrypts ciphertext written with it.
+      EMAIL_SETTINGS_ENCRYPTION_KEY_PREVIOUS: ${EMAIL_SETTINGS_ENCRYPTION_KEY_PREVIOUS:-}
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     networks:
