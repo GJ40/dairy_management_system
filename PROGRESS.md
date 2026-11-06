@@ -733,6 +733,20 @@ Changed:
   and the portal cookie names added.
 - `app/main.py` â€” the wildcard CORS regex is limited to `NODE_ENV=development`; other environments
   use `CORS_ORIGINS` only.
+
+Later fix (CORS preflight for credentialed frontend calls):
+
+- `app/main.py` â€” `Access-Control-Allow-Origin: *` is never sent, because the browser rejects it on
+  every request that sets `withCredentials` (all of `frontend/src/api/client.js`). A `*` in
+  `CORS_ORIGINS` is no longer forwarded to `CORSMiddleware`; it becomes "mirror the requesting
+  origin", the same mechanism the development regex uses, and logs a warning outside
+  `NODE_ENV=development`.
+- `app/core/config.py` â€” `cors_origin_list` drops a trailing slash from each origin, so
+  `CORS_ORIGINS=http://localhost:5173/` matches the bare `Origin` header a browser sends instead of
+  rejecting every preflight.
+- `tests/test_middleware.py` â€” credentialed `POST /api/v1/auth/login` preflight asserts the origin is
+  mirrored and never `*`; a wildcard config and a trailing-slash config are covered, and staging
+  still rejects an origin outside the list. `tests/test_config.py` covers the parsing.
 - `app/models/password_reset_token.py`, `app/repositories/password_reset_repository.py`,
   `app/services/password_reset_service.py`, `app/services/email_service.py`,
   `app/schemas/password_reset.py` (all new) â€” single-use staff and customer reset links, SHA-256

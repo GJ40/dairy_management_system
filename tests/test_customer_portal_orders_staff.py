@@ -15,6 +15,7 @@ from app.core.dependencies import (
     get_customer_repository,
     get_db,
     get_invoice_service,
+    get_order_email_dispatch,
     get_sale_repository,
     get_security_audit_service,
     get_stock_lock_service,
@@ -436,6 +437,15 @@ class StaffOrderApiTests(unittest.IsolatedAsyncioTestCase):
         app.dependency_overrides[get_sale_repository] = lambda: self.sales
         app.dependency_overrides[get_invoice_service] = lambda: self.invoices
 
+        self.dispatched: list[tuple[str, int]] = []
+
+        async def fake_dispatch(*, event_key: str, order_id: int) -> None:
+            self.dispatched.append((event_key, order_id))
+
+        app.dependency_overrides[get_order_email_dispatch] = (
+            lambda: fake_dispatch
+        )
+
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
@@ -535,6 +545,8 @@ class StaffOrderApiTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(cancelled.status_code, 200)
         self.assertEqual(cancelled.json()["order"]["status"], "cancelled")
+        # One staff cancellation queues exactly one customer email.
+        self.assertEqual(self.dispatched.count(("order.cancelled", 3)), 1)
 
     async def test_validation_and_permission_errors(self) -> None:
         bad_reason = await self.client.post(
@@ -561,6 +573,16 @@ class StaffOrderApiTests(unittest.IsolatedAsyncioTestCase):
             invalid_transition.json()["error"]["code"],
             "INVALID_ORDER_TRANSITION",
         )
+
+    async def test_order_notification_is_dispatched_after_commit(self) -> None:
+        approved = await self.client.post(
+            "/api/v1/customer-orders/1/approve",
+            headers=self._auth(self.operator),
+            json={},
+        )
+
+        self.assertEqual(approved.status_code, 200, approved.text)
+        self.assertEqual(self.dispatched, [("order.approved", 1)])
 
     async def test_openapi_documents_staff_routes(self) -> None:
         response = await self.client.get("/api/v1/docs/openapi.json")

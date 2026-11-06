@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, status
 
 from app.core.dependencies import get_customer_query_service, require_roles
 from app.core.request_context import get_request_context
@@ -60,6 +60,7 @@ async def add_customer_query_message(
     query_id: int,
     payload: StaffAddQueryMessageRequest,
     request: Request,
+    background: BackgroundTasks,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerQueryService = Depends(get_customer_query_service),
 ) -> dict[str, Any]:
@@ -69,6 +70,7 @@ async def add_customer_query_message(
         payload.message,
         is_internal=payload.is_internal,
         context=get_request_context(request),
+        background=background,
     )
 
 

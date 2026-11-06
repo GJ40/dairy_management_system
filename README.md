@@ -18,7 +18,7 @@ The legacy Node backend in `../backend` is not used by this service and was not 
 Set-Location -LiteralPath 'D:\Projects\dairy_management_system\backend_py'
 uv sync                                  # create .venv and install the lockfile
 Copy-Item .env.example .env              # then edit the values you need
-uv run alembic upgrade head              # 0001_baseline .. 0006_login_lockout
+uv run alembic upgrade head              # 0001_baseline .. 0007_email_notification_settings
 uv run uvicorn app.main:app --reload     # http://localhost:8000
 ```
 
@@ -39,6 +39,7 @@ so the same file works as a template.
 | Login protection | `LOGIN_COOLDOWN_THRESHOLD`, `LOGIN_COOLDOWN_MINUTES`, `LOGIN_LOCKOUT_THRESHOLD`, `LOGIN_LOCKOUT_WINDOW_MINUTES` |
 | Failed-login alerts | `FAILED_LOGIN_ALERT_ENABLED`, `FAILED_LOGIN_ALERT_THRESHOLD`, `FAILED_LOGIN_ALERT_WINDOW_MINUTES`, `FAILED_LOGIN_ALERT_COOLDOWN_MINUTES` |
 | Mail | `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_USE_TLS`, `SMTP_USE_SSL`, `SMTP_TIMEOUT_SECONDS`, `MAIL_FROM_EMAIL`, `MAIL_FROM_NAME`, `FRONTEND_URL`, `PASSWORD_RESET_TTL_MINUTES` |
+| Email settings (DB-managed) | `EMAIL_SETTINGS_ENCRYPTION_KEY`, `EMAIL_SETTINGS_ENCRYPTION_KEY_PREVIOUS` |
 
 Set a distinct `CUSTOMER_JWT_SECRET` in production so staff and customer tokens cannot be
 confused for one another.
@@ -57,7 +58,7 @@ confused for one another.
 
 ```powershell
 uv run alembic current          # what the database is at
-uv run alembic upgrade head     # apply 0001_baseline .. 0006_login_lockout
+uv run alembic upgrade head     # apply 0001_baseline .. 0007_email_notification_settings
 uv run alembic downgrade -1     # roll the latest revision back
 ```
 
@@ -66,7 +67,8 @@ foreign keys that are missing (`app/db/migration_helpers.py`), so
 `alembic upgrade head` can be re-run on a fresh volume, on the legacy Sequelize
 database, or on a database left behind by an interrupted run without failing with
 "table already exists" / "duplicate column name" / "duplicate key name". The chain is
-`0001_baseline` to `0006_login_lockout`.
+`0001_baseline` to `0007_email_notification_settings`, and `alembic downgrade
+0006_login_lockout` removes the four email-settings tables without touching anything else.
 
 Under Docker the backend container does this by itself: `docker-entrypoint.sh` waits
 for MySQL, runs the migrations, ensures the base seed data, then starts Uvicorn. Use
@@ -84,7 +86,15 @@ alter any existing table or row. `0003_password_reset` adds the
 `password_reset_tokens` table (SHA-256 hashes only, one row per issued link).
 `0004_token_version` adds `token_version` (default `0`) to `users` and
 `customer_portal_accounts` so a password reset or deactivation can invalidate every
-session issued earlier. Take a backup before applying any migration to a live database.
+session issued earlier.
+
+`0007_email_notification_settings` is likewise purely additive: it creates
+`email_smtp_profiles`, `email_sender_identities`, `email_workflow_mappings` and
+`email_notification_recipients`. SMTP credentials are stored as Fernet ciphertext and are
+never selected by a read model. `alembic downgrade 0006_login_lockout` drops exactly those
+four tables; the key that decrypts their credentials lives in `EMAIL_SETTINGS_ENCRYPTION_KEY`
+(never in the database), so a database dump alone cannot reveal a password. Take a backup
+before applying any migration to a live database.
 
 ---
 
@@ -109,6 +119,7 @@ health: `GET /health`.
 | Portal accounts (staff) | `GET /customer-portal-accounts`, `GET /{id}`, `POST`, `POST /{id}/reactivate`, `POST /{id}/deactivate`, `POST /{id}/reset-activation` | read: admin+operator; writes: admin |
 | Customer orders (staff) | `GET /customer-orders`, `GET /{id}`, `POST /{id}/approve`, `POST /{id}/reject`, `POST /{id}/fulfil`, `POST /{id}/cancel` | admin, operator |
 | Customer queries (staff) | `GET /customer-queries`, `GET /{id}`, `POST /{id}/messages`, `POST /{id}/status`, `POST /{id}/assign` (admin only) | admin, operator |
+| Email settings | `GET /email-settings/smtp`, `POST /email-settings/smtp/profiles`, `GET/PATCH /smtp/profiles/{id}`, `POST /smtp/profiles/{id}/test-connection`, `…/test-email`, `…/activate`, `POST /smtp/use-environment`, `GET/POST /senders`, `GET/PATCH/DELETE /senders/{id}`, `POST /senders/{id}/activate`, `…/deactivate`, `GET /workflows`, `GET/PUT /workflow-mappings`, `GET/POST /recipients`, `GET/PATCH/DELETE /recipients/{id}`, `POST /recipients/{id}/activate`, `…/deactivate` | admin |
 | Customer auth | `POST /customer-auth/activate`, `POST /customer-auth/login`, `POST /customer-auth/refresh`, `POST /customer-auth/logout`, `POST /customer-auth/forgot-password`, `GET /customer-auth/reset-password/validate`, `POST /customer-auth/reset-password`, `GET /customer-auth/me` | public / customer |
 | Customer portal | `GET /customer-portal/dashboard`, `GET /profile`, `GET /balance`, `GET/POST /orders`, `GET /orders/{id}`, `POST /orders/{id}/cancel`, `GET /invoices`, `GET /invoices/{id}`, `GET /invoices/{id}/pdf`, `GET/POST /queries`, `GET /queries/{id}`, `POST /queries/{id}/messages` | customer only |
 
@@ -204,12 +215,24 @@ message and the structured fields are built from `settings` at call time, the lo
 API clients, logs and the alert email all follow with no code change. `docker-compose.yaml`
 also forwards these variables, so the container sees the same values.
 
-**Mail.** `app/services/email_service.py` renders all five messages
+**Mail.** `app/services/email_service.py` renders the five account, security and onboarding messages
 (`send_password_reset`, `send_password_changed`, `send_failed_login_alert`,
 `send_account_locked_notice`, `send_portal_activation`) through one inline-styled,
 table-based shell: hidden preheader, brand bar with a tone-coded status pill, accent rule,
 details table, numbered steps, tinted callout and a matching plain-text part. No external
 images, fonts or scripts, so the layout holds in Gmail, Outlook and mobile clients.
+
+**Mail settings are database-managed.** Once an Admin activates an SMTP profile in
+`/email-settings`, that profile is the transport for every workflow and the `SMTP_*`
+variables are ignored (there is no silent fallback if decryption fails). With no active
+profile the environment transport is used, and mail is simply disabled while `SMTP_HOST` or
+`MAIL_FROM_EMAIL` is empty: the send logs `EMAIL_NOT_CONFIGURED` and returns `False` without
+failing the request. Per workflow, `EmailConfigResolver` picks the From identity by
+event mapping, then category, then application, then `MAIL_FROM_*`, and the Reply-To by event,
+then category, then the sender's own Reply-To. The catalogue in
+`app/services/email_workflow_catalogue.py` owns the event keys (orders, support queries,
+payment receipts, account and security alerts), so a workflow that is not listed there cannot
+be mapped. Setup, UAT and rollback: `../docs/EMAIL_NOTIFICATION_SETTINGS_UAT_RELEASE.md`.
 
 ---
 
@@ -222,12 +245,14 @@ uv run python -m compileall -q app tests
 uv run pytest -q
 ```
 
-Current baseline: **388 passed / 150 subtests**, ruff clean, compileall exit 0
-(2026-11-03); `npm run lint` and `npm run build` also pass in `frontend/`.
+Current baseline: **671 passed / 251 subtests**, ruff clean (2026-11-06); `npm run lint` and
+`npm run build` also pass in `frontend/` (2093 modules, single ~784 kB chunk advisory).
 Tests use fakes and dependency overrides; they never open the live database.
 The Windows pytest-cache permission warning is benign; the local `.env` may also make
 PyJWT warn that a development signing key is shorter than 32 bytes (production rejects
 such a key at startup).
 
 See `../docs/CUSTOMER_PORTAL_UAT_RELEASE.md` for the UAT script, release checklist and
-backup/rollback procedure.
+backup/rollback procedure, and `../docs/EMAIL_NOTIFICATION_SETTINGS_UAT_RELEASE.md` for the
+email settings module (key generation/rotation, SMTP activation, the seventeen workflow
+events, and the `0007` rollback).

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
+from typing import Any
 
 from fastapi import BackgroundTasks
 
@@ -19,6 +21,14 @@ CUSTOMER_SCOPE = "customer"
 STAFF_RESOURCE = "staff_user"
 CUSTOMER_RESOURCE = "customer_portal_account"
 
+# Internal-observer workflow events for the two alert kinds.
+STAFF_FAILED_LOGIN_ALERT_EVENT = "account.staff_failed_login_alert"
+CUSTOMER_FAILED_LOGIN_ALERT_EVENT = "account.customer_failed_login_alert"
+STAFF_ACCOUNT_LOCKED_EVENT = "account.staff_account_locked"
+CUSTOMER_ACCOUNT_LOCKED_EVENT = "account.customer_account_locked"
+
+InternalDispatch = Callable[[str, dict[str, Any] | None], Awaitable[int]]
+
 
 class LoginSecurityService:
     """Best-effort login auditing and failed-login alerting.
@@ -32,9 +42,14 @@ class LoginSecurityService:
         self,
         audit: SecurityAuditService,
         email_service: EmailService | None = None,
+        *,
+        internal_dispatch: InternalDispatch | None = None,
     ) -> None:
         self.audit = audit
         self.email_service = email_service
+        # Optional so every existing caller (and test) keeps working: with no
+        # dispatcher configured, internal recipients simply receive nothing.
+        self.internal_dispatch = internal_dispatch
 
     async def record_success(
         self,
@@ -273,6 +288,21 @@ class LoginSecurityService:
                 reason_code="delivery_failed",
             )
 
+        await self._notify_internal(
+            (
+                STAFF_FAILED_LOGIN_ALERT_EVENT
+                if scope == STAFF_SCOPE
+                else CUSTOMER_FAILED_LOGIN_ALERT_EVENT
+            ),
+            {
+                "occurred_at": occurred_at_utc.isoformat(),
+                "account_email": to,
+                "account_name": name,
+                "failure_count": failure_count,
+                "window_minutes": settings.failed_login_alert_window_minutes,
+            },
+        )
+
     async def record_account_locked(
         self,
         *,
@@ -346,7 +376,37 @@ class LoginSecurityService:
                     ),
                 )
 
+            await self._notify_internal(
+                (
+                    STAFF_ACCOUNT_LOCKED_EVENT
+                    if scope == STAFF_SCOPE
+                    else CUSTOMER_ACCOUNT_LOCKED_EVENT
+                ),
+                {
+                    "occurred_at": utc_now_naive().isoformat(),
+                    "account_email": email,
+                    "account_name": name,
+                    "failure_count": failure_count,
+                    "window_minutes": settings.login_lockout_window_minutes,
+                },
+            )
+
         await self._run_or_queue(process, background)
+
+    async def _notify_internal(
+        self,
+        event_key: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Best-effort copy for the internal recipients; never changes the flow."""
+        if self.internal_dispatch is None:
+            return
+        try:
+            await self.internal_dispatch(event_key, payload)
+        except Exception:
+            logger.exception(
+                "Internal notification dispatch for %r raised", event_key
+            )
 
     async def _record_delivery_failed(
         self,

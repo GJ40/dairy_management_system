@@ -8,7 +8,13 @@ from sqlalchemy.orm import configure_mappers
 
 import app.models  # noqa: F401
 from app.db.base import Base
-from app.models import Buffalo, ExpenseCategory, User
+from app.models import (
+    Buffalo,
+    EmailNotificationRecipient,
+    EmailSenderIdentity,
+    ExpenseCategory,
+    User,
+)
 
 EXPECTED_TABLES = {
     "buffaloes",
@@ -19,6 +25,10 @@ EXPECTED_TABLES = {
     "customer_queries",
     "customer_query_messages",
     "customers",
+    "email_notification_recipients",
+    "email_sender_identities",
+    "email_smtp_profiles",
+    "email_workflow_mappings",
     "expense_categories",
     "expenses",
     "invoice_sales",
@@ -39,6 +49,16 @@ EXPECTED_SET_NULL_FKS = {
     "fk_customer_queries_assigned_to",
     "fk_customer_query_messages_sender_account_id",
     "fk_customer_query_messages_sender_user_id",
+    "fk_email_notification_recipients_created_by",
+    "fk_email_notification_recipients_updated_by",
+    "fk_email_sender_identities_created_by",
+    "fk_email_sender_identities_updated_by",
+    "fk_email_smtp_profiles_created_by",
+    "fk_email_smtp_profiles_updated_by",
+    "fk_email_workflow_mappings_created_by",
+    "fk_email_workflow_mappings_reply_to_sender_identity_id",
+    "fk_email_workflow_mappings_sender_identity_id",
+    "fk_email_workflow_mappings_updated_by",
     "fk_sales_source_order_id",
     "fk_security_audit_events_actor_account_id",
     "fk_security_audit_events_actor_user_id",
@@ -108,7 +128,7 @@ class ModelSchemaTests(unittest.TestCase):
             for table in Base.metadata.tables.values()
             for fk in table.foreign_keys
         }
-        self.assertEqual(len(foreign_keys), 28)
+        self.assertEqual(len(foreign_keys), 38)
         for name, fk in foreign_keys.items():
             self.assertEqual(fk.onupdate, "CASCADE", name)
             expected = "SET NULL" if name in EXPECTED_SET_NULL_FKS else "CASCADE"
@@ -188,6 +208,60 @@ class ModelSchemaTests(unittest.TestCase):
     def test_email_normalization(self) -> None:
         user = User(email="  Admin@Example.COM ")
         self.assertEqual(user.email, "admin@example.com")
+
+    def test_email_settings_tables_are_additive(self) -> None:
+        profiles = Base.metadata.tables["email_smtp_profiles"]
+        self.assertIn("active_slot", profiles.c)
+        self.assertIn("config_fingerprint", profiles.c)
+        self.assertIn("username_encrypted", profiles.c)
+        self.assertIn("password_encrypted", profiles.c)
+        # Only ciphertext columns may exist; no plaintext credential column.
+        self.assertNotIn("username", profiles.c)
+        self.assertNotIn("password", profiles.c)
+
+        active_slot = {
+            index.name: index for index in profiles.indexes
+        }["email_smtp_profiles_active_slot"]
+        self.assertTrue(active_slot.unique)
+        self.assertEqual([column.name for column in active_slot.columns], ["active_slot"])
+
+        senders = Base.metadata.tables["email_sender_identities"]
+        sender_email = {
+            index.name: index for index in senders.indexes
+        }["email_sender_identities_email"]
+        self.assertTrue(sender_email.unique)
+
+        mappings = Base.metadata.tables["email_workflow_mappings"]
+        mapping_key = {
+            index.name: index for index in mappings.indexes
+        }["email_workflow_mappings_mapping_key"]
+        self.assertTrue(mapping_key.unique)
+
+        recipients = Base.metadata.tables["email_notification_recipients"]
+        recipient_key = {
+            index.name: index for index in recipients.indexes
+        }["email_notification_recipients_mapping_key_email"]
+        self.assertTrue(recipient_key.unique)
+        self.assertEqual(
+            [column.name for column in recipient_key.columns],
+            ["mapping_key", "email"],
+        )
+
+    def test_email_settings_email_normalization(self) -> None:
+        sender = EmailSenderIdentity(
+            display_name="Operations",
+            email="  Ops@Example.COM ",
+            reply_to_email=" Support@Example.COM ",
+        )
+        self.assertEqual(sender.email, "ops@example.com")
+        self.assertEqual(sender.reply_to_email, "support@example.com")
+
+        recipient = EmailNotificationRecipient(
+            scope="event",
+            mapping_key="order.submitted",
+            email=" OPS@Example.COM ",
+        )
+        self.assertEqual(recipient.email, "ops@example.com")
 
     def test_tag_normalization(self) -> None:
         buffalo = Buffalo(tag_no="  tag-101 ")

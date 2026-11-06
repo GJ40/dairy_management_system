@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
 from fastapi import status as http_status
 
 from app.core.dependencies import (
@@ -68,6 +68,7 @@ async def get_profile(
 async def create_order(
     request: Request,
     payload: CreateCustomerOrderRequest,
+    background: BackgroundTasks,
     account: CustomerPortalAccount = Depends(get_current_customer_account),
     service: CustomerOrderService = Depends(get_customer_order_service),
 ) -> dict[str, Any]:
@@ -77,6 +78,7 @@ async def create_order(
         requested_date=payload.requested_date,
         note=payload.note,
         context=get_request_context(request),
+        background=background,
     )
 
 
@@ -115,6 +117,7 @@ async def get_order(
 async def cancel_order(
     order_id: int,
     request: Request,
+    background: BackgroundTasks,
     payload: CancelCustomerOrderRequest | None = None,
     account: CustomerPortalAccount = Depends(get_current_customer_account),
     service: CustomerOrderService = Depends(get_customer_order_service),
@@ -124,6 +127,7 @@ async def cancel_order(
         order_id,
         payload.reason if payload is not None else None,
         context=get_request_context(request),
+        background=background,
     )
 
 
@@ -192,6 +196,7 @@ async def get_balance(
 async def create_query(
     request: Request,
     payload: CreateCustomerQueryRequest,
+    background: BackgroundTasks,
     account: CustomerPortalAccount = Depends(get_current_customer_account),
     service: CustomerQueryService = Depends(get_customer_query_service),
 ) -> dict[str, Any]:
@@ -201,6 +206,7 @@ async def create_query(
         subject=payload.subject,
         message=payload.message,
         context=get_request_context(request),
+        background=background,
     )
 
 

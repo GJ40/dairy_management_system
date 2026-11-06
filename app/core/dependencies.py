@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import jwt
@@ -24,6 +26,7 @@ from app.repositories.customer_portal_account_repository import (
 from app.repositories.customer_query_repository import CustomerQueryRepository
 from app.repositories.customer_repository import CustomerRepository
 from app.repositories.delete_repository import DeleteRepository
+from app.repositories.email_settings_repository import EmailSettingsRepository
 from app.repositories.expense_category_repository import ExpenseCategoryRepository
 from app.repositories.expense_repository import ExpenseRepository
 from app.repositories.invoice_repository import InvoiceRepository
@@ -47,12 +50,23 @@ from app.services.customer_portal_auth_service import (
 from app.services.customer_query_service import CustomerQueryService
 from app.services.customer_service import CustomerService
 from app.services.delete_service import DeleteService
+from app.services.email_config_resolver import EmailConfigResolver
 from app.services.email_service import EmailService
+from app.services.email_settings_crypto import EmailSettingsCrypto, crypto_from_settings
+from app.services.email_settings_service import EmailSettingsService
 from app.services.expense_category_service import ExpenseCategoryService
 from app.services.expense_service import ExpenseService
-from app.services.invoice_service import InvoiceService
-from app.services.login_security_service import LoginSecurityService
+from app.services.internal_notification_service import (
+    dispatch_internal_notification,
+)
+from app.services.invoice_service import InvoiceService, PaymentReceiptDispatch
+from app.services.login_security_service import InternalDispatch, LoginSecurityService
+from app.services.order_email_service import (
+    OrderEmailDispatch,
+    dispatch_order_email,
+)
 from app.services.password_reset_service import PasswordResetService
+from app.services.payment_receipt_service import dispatch_payment_receipt
 from app.services.production_service import ProductionService
 from app.services.report_service import ReportService
 from app.services.sale_service import SaleService
@@ -320,10 +334,6 @@ def get_user_repository(db: AsyncSession = Depends(get_db)) -> UserRepository:
     return UserRepository(db)
 
 
-def get_email_service() -> EmailService:
-    return EmailService()
-
-
 def get_security_audit_service(
     db: AsyncSession = Depends(get_db),
 ) -> SecurityAuditService:
@@ -333,16 +343,84 @@ def get_security_audit_service(
     )
 
 
+def get_email_settings_repository(
+    db: AsyncSession = Depends(get_db),
+) -> EmailSettingsRepository:
+    return EmailSettingsRepository(db)
+
+
+def get_email_settings_crypto() -> EmailSettingsCrypto:
+    primary = settings.email_settings_encryption_key
+    previous = settings.email_settings_encryption_key_previous
+    return EmailSettingsCrypto(
+        primary.get_secret_value() if primary is not None else None,
+        previous.get_secret_value() if previous is not None else None,
+    )
+
+
+def get_email_settings_service(
+    repository: EmailSettingsRepository = Depends(get_email_settings_repository),
+    crypto: EmailSettingsCrypto = Depends(get_email_settings_crypto),
+    audit: SecurityAuditService = Depends(get_security_audit_service),
+) -> EmailSettingsService:
+    return EmailSettingsService(repository, crypto=crypto, audit=audit)
+
+
+def get_email_config_resolver(
+    repository: EmailSettingsRepository = Depends(get_email_settings_repository),
+    crypto: EmailSettingsCrypto = Depends(get_email_settings_crypto),
+) -> EmailConfigResolver:
+    return EmailConfigResolver(repository, crypto=crypto)
+
+
+@asynccontextmanager
+async def _session_scoped_resolver() -> AsyncIterator[EmailConfigResolver]:
+    """Resolver with its own short-lived session.
+
+    Password-reset and portal-activation emails are queued with
+    ``deliver_or_queue``, so they are sent *after* the response, when the
+    request's session is already closed. The resolver therefore never borrows
+    the request session, exactly like the background dispatchers.
+    """
+    async with SessionLocal() as session:
+        yield EmailConfigResolver(
+            EmailSettingsRepository(session),
+            crypto=crypto_from_settings(settings),
+        )
+
+
+def get_email_service() -> EmailService:
+    """Email service that honours the workflow sender identities.
+
+    The provider is what lets the account, security and portal emails use a
+    database SMTP profile and the configured sender identities instead of the
+    environment sender.
+    """
+    return EmailService(resolver_provider=_session_scoped_resolver)
+
+
 # Defined after get_security_audit_service because require_roles() binds that
 # dependency when the factory runs.
 require_admin = require_roles("admin")
 
 
+def get_internal_notification_dispatch() -> InternalDispatch:
+    """Background entry point for internal observer copies (test-overridable)."""
+    return dispatch_internal_notification
+
+
 def get_login_security_service(
     audit: SecurityAuditService = Depends(get_security_audit_service),
     email_service: EmailService = Depends(get_email_service),
+    internal_dispatch: InternalDispatch = Depends(
+        get_internal_notification_dispatch
+    ),
 ) -> LoginSecurityService:
-    return LoginSecurityService(audit, email_service)
+    return LoginSecurityService(
+        audit,
+        email_service,
+        internal_dispatch=internal_dispatch,
+    )
 
 
 def get_auth_service(
@@ -461,6 +539,11 @@ def get_invoice_repository(
     return InvoiceRepository(db)
 
 
+def get_payment_receipt_dispatch() -> PaymentReceiptDispatch:
+    """Background entry point for payment receipts (overridable in tests)."""
+    return dispatch_payment_receipt
+
+
 def get_invoice_service(
     repository: InvoiceRepository = Depends(get_invoice_repository),
     customer_repository: CustomerRepository = Depends(
@@ -468,12 +551,16 @@ def get_invoice_service(
     ),
     sale_repository: SaleRepository = Depends(get_sale_repository),
     audit: SecurityAuditService = Depends(get_security_audit_service),
+    email_dispatch: PaymentReceiptDispatch = Depends(
+        get_payment_receipt_dispatch
+    ),
 ) -> InvoiceService:
     return InvoiceService(
         repository,
         customer_repository,
         sale_repository,
         audit=audit,
+        email_dispatch=email_dispatch,
     )
 
 
@@ -613,6 +700,11 @@ def get_password_reset_service(
     )
 
 
+def get_order_email_dispatch() -> OrderEmailDispatch:
+    """Background entry point for order notifications (overridable in tests)."""
+    return dispatch_order_email
+
+
 def get_customer_order_service(
     repository: CustomerOrderRepository = Depends(get_customer_order_repository),
     customer_repository: CustomerRepository = Depends(get_customer_repository),
@@ -621,6 +713,7 @@ def get_customer_order_service(
     sale_repository: SaleRepository = Depends(get_sale_repository),
     invoice_service: InvoiceService = Depends(get_invoice_service),
     audit: SecurityAuditService = Depends(get_security_audit_service),
+    email_dispatch: OrderEmailDispatch = Depends(get_order_email_dispatch),
 ) -> CustomerOrderService:
     return CustomerOrderService(
         repository,
@@ -630,6 +723,7 @@ def get_customer_order_service(
         invoice_service=invoice_service,
         stock_lock=stock_lock,
         audit=audit,
+        email_dispatch=email_dispatch,
     )
 
 
@@ -667,6 +761,10 @@ def get_customer_query_service(
     ),
     user_repository: UserRepository = Depends(get_user_repository),
     audit: SecurityAuditService = Depends(get_security_audit_service),
+    email_service: EmailService = Depends(get_email_service),
+    internal_dispatch: InternalDispatch = Depends(
+        get_internal_notification_dispatch
+    ),
 ) -> CustomerQueryService:
     return CustomerQueryService(
         repository,
@@ -674,4 +772,6 @@ def get_customer_query_service(
         account_repository,
         user_repository,
         audit,
+        email_service=email_service,
+        internal_dispatch=internal_dispatch,
     )

@@ -3,7 +3,15 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query, Request, status
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Body,
+    Depends,
+    Query,
+    Request,
+    status,
+)
 
 from app.core.dependencies import (
     get_customer_order_service,
@@ -76,6 +84,7 @@ async def get_customer_order(
 async def approve_customer_order(
     order_id: int,
     request: Request,
+    background: BackgroundTasks,
     payload: ApproveOrderRequest | None = Body(default=None),
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerOrderService = Depends(get_customer_order_service),
@@ -85,6 +94,7 @@ async def approve_customer_order(
         order_id,
         payload.note if payload is not None else None,
         context=get_request_context(request),
+        background=background,
     )
 
 
@@ -93,6 +103,7 @@ async def reject_customer_order(
     order_id: int,
     request: Request,
     payload: RejectOrderRequest,
+    background: BackgroundTasks,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerOrderService = Depends(get_customer_order_service),
 ) -> dict[str, Any]:
@@ -101,6 +112,7 @@ async def reject_customer_order(
         order_id,
         payload.reason,
         context=get_request_context(request),
+        background=background,
     )
 
 
@@ -108,6 +120,7 @@ async def reject_customer_order(
 async def fulfil_customer_order(
     order_id: int,
     request: Request,
+    background: BackgroundTasks,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerOrderService = Depends(get_customer_order_service),
 ) -> dict[str, Any]:
@@ -115,6 +128,7 @@ async def fulfil_customer_order(
         user,
         order_id,
         context=get_request_context(request),
+        background=background,
     )
 
 
@@ -123,6 +137,7 @@ async def cancel_customer_order(
     order_id: int,
     request: Request,
     payload: StaffCancelOrderRequest,
+    background: BackgroundTasks,
     user: User = Depends(require_roles("admin", "operator")),
     service: CustomerOrderService = Depends(get_customer_order_service),
 ) -> dict[str, Any]:
@@ -131,4 +146,5 @@ async def cancel_customer_order(
         order_id,
         payload.reason,
         context=get_request_context(request),
+        background=background,
     )

@@ -38,6 +38,25 @@ class ProductionConfigTests(unittest.TestCase):
             production_settings(frontend_url="http://dairy.example.com")
 
 
+class CorsOriginTests(unittest.TestCase):
+    def _settings(self, cors_origins: str) -> Settings:
+        return Settings(node_env="development", cors_origins=cors_origins)
+
+    def test_origins_are_split_and_trimmed(self) -> None:
+        settings = self._settings(" http://localhost:5173 , http://localhost:3000 ")
+        self.assertEqual(
+            settings.cors_origin_list,
+            ["http://localhost:5173", "http://localhost:3000"],
+        )
+
+    def test_trailing_slash_is_dropped(self) -> None:
+        settings = self._settings("http://localhost:5173/")
+        self.assertEqual(settings.cors_origin_list, ["http://localhost:5173"])
+
+    def test_wildcard_is_kept_for_the_app_to_interpret(self) -> None:
+        self.assertEqual(self._settings("*").cors_origin_list, ["*"])
+
+
 class SecuritySettingsTests(unittest.TestCase):
     def test_proxy_trust_is_explicit(self) -> None:
         self.assertFalse(Settings(trust_proxy=False).trust_proxy)

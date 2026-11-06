@@ -3,11 +3,12 @@ from __future__ import annotations
 import math
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from fastapi import status
+from fastapi import BackgroundTasks, status
 
 from app.core.errors import api_error
 from app.core.request_context import RequestContext
@@ -23,6 +24,10 @@ from app.schemas.invoice import (
 )
 from app.services.security_audit_service import SecurityAuditService
 from app.utils.pdf import build_invoice_pdf
+from app.utils.tasks import deliver_or_queue
+
+# Background entry point: (invoice_id, payment_amount) -> nothing.
+PaymentReceiptDispatch = Callable[..., Awaitable[None]]
 
 CENT = Decimal("0.01")
 
@@ -45,11 +50,15 @@ class InvoiceService:
         sale_repository: SaleRepository,
         *,
         audit: SecurityAuditService | None = None,
+        email_dispatch: PaymentReceiptDispatch | None = None,
     ) -> None:
         self.repository = repository
         self.customer_repository = customer_repository
         self.sale_repository = sale_repository
         self.audit = audit
+        # Optional so every existing caller (and test) keeps working: with no
+        # dispatcher configured, recording a payment simply sends nothing.
+        self.email_dispatch = email_dispatch
 
     async def _record(
         self,
@@ -251,6 +260,7 @@ class InvoiceService:
         *,
         actor_user_id: int | None = None,
         context: RequestContext | None = None,
+        background: BackgroundTasks | None = None,
     ) -> dict[str, Any]:
         payment_amount = Decimal(str(payload.amount))
         if not payment_amount.is_finite() or payment_amount <= 0:
@@ -315,7 +325,32 @@ class InvoiceService:
             await self.repository.rollback()
             raise
 
+        # Queued after the commit: the receipt is a notification about a
+        # payment that already happened, never a reason to fail it.
+        await self._notify_payment(
+            invoice_id=invoice.id,
+            amount=payment_amount,
+            background=background,
+        )
+
         return await self.get_invoice_by_id(raw_id)
+
+    async def _notify_payment(
+        self,
+        *,
+        invoice_id: int,
+        amount: Decimal,
+        background: BackgroundTasks | None,
+    ) -> None:
+        """Queue the customer receipt; only called after a commit."""
+        if self.email_dispatch is None:
+            return
+        await deliver_or_queue(
+            background,
+            self.email_dispatch,
+            invoice_id=invoice_id,
+            payment_amount=str(amount),
+        )
 
     async def generate_invoice_pdf(
         self,

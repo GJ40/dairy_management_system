@@ -11,6 +11,7 @@ dependencies = [
     "alembic>=1.20.1",
     "asyncmy>=0.2.17",
     "bcrypt>=5.0.0",
+    "cryptography>=50.0.2",
     "emails>=1.1.3",
     "faker>=40.43.0",
     "fastapi[standard]>=0.162.0",

@@ -143,6 +143,14 @@ class Settings(BaseSettings):
         default="AmritDhara Dairy",
         validation_alias="MAIL_FROM_NAME",
     )
+    email_settings_encryption_key: SecretStr | None = Field(
+        default=None,
+        validation_alias="EMAIL_SETTINGS_ENCRYPTION_KEY",
+    )
+    email_settings_encryption_key_previous: SecretStr | None = Field(
+        default=None,
+        validation_alias="EMAIL_SETTINGS_ENCRYPTION_KEY_PREVIOUS",
+    )
 
     # --- Password reset -------------------------------------------------
     password_reset_ttl_minutes: int = Field(
@@ -406,6 +414,17 @@ class Settings(BaseSettings):
             return None
         return value
 
+    @field_validator(
+        "email_settings_encryption_key",
+        "email_settings_encryption_key_previous",
+        mode="before",
+    )
+    @classmethod
+    def _empty_email_settings_key(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("refresh_cookie_domain", mode="before")
     @classmethod
     def _empty_cookie_domain(cls, value: object) -> object:
@@ -462,7 +481,17 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        """Origins allowed to call the API, taken from `CORS_ORIGINS`.
+
+        The trailing slash is dropped: browsers put the bare origin in the
+        `Origin` header, so a configured `http://localhost:5173/` would never
+        match and every preflight from that page would be rejected.
+        """
+        return [
+            origin.rstrip("/")
+            for origin in (part.strip() for part in self.cors_origins.split(","))
+            if origin
+        ]
 
     @property
     def refresh_cookie_max_age(self) -> int:

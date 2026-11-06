@@ -6,6 +6,10 @@ from app.models.customer_portal_account import CustomerPortalAccount
 from app.models.customer_portal_account_event import CustomerPortalAccountEvent
 from app.models.customer_query import CustomerQuery
 from app.models.customer_query_message import CustomerQueryMessage
+from app.models.email_notification_recipient import EmailNotificationRecipient
+from app.models.email_sender_identity import EmailSenderIdentity
+from app.models.email_smtp_profile import EmailSmtpProfile
+from app.models.email_workflow_mapping import EmailWorkflowMapping
 from app.models.expense import Expense
 from app.models.expense_category import ExpenseCategory
 from app.models.invoice import Invoice
@@ -26,6 +30,10 @@ __all__ = [
     "CustomerPortalAccountEvent",
     "CustomerQuery",
     "CustomerQueryMessage",
+    "EmailNotificationRecipient",
+    "EmailSenderIdentity",
+    "EmailSmtpProfile",
+    "EmailWorkflowMapping",
     "Expense",
     "ExpenseCategory",
     "Invoice",
